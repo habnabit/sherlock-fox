@@ -1,6 +1,5 @@
-//! Renders a 2D scene containing a single, moving sprite.
-
 use bevy::prelude::*;
+use fixedbitset::FixedBitSet;
 
 fn main() {
     App::new()
@@ -11,6 +10,25 @@ fn main() {
 }
 
 #[derive(Component)]
+enum GridCell {
+    One(usize),
+    Many(FixedBitSet),
+}
+
+impl GridCell {
+    fn new(len: usize) -> Self {
+        let mut bitset = FixedBitSet::with_capacity(len);
+        bitset.set_range(.., true);
+        GridCell::Many(bitset)
+    }
+}
+
+#[derive(Component)]
+struct GridRow {
+    base: String,
+}
+
+#[derive(Component)]
 enum Direction {
     Up,
     Down,
@@ -18,11 +36,27 @@ enum Direction {
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.spawn(Camera2d);
-    commands.spawn((
-        Sprite::from_image(asset_server.load("blue.jpg")),
-        Transform::from_xyz(100., 0., 0.),
-        Direction::Up,
-    ));
+
+    let mut y_at = -200.0;
+    for base in "ABCD".chars() {
+        let base: String = base.into();
+        commands
+            .spawn((
+                GridRow { base },
+                Visibility::default(),
+                Transform::from_xyz(-200., y_at, 0.),
+            ))
+            .with_children(|row| {
+                for x in 0..4 {
+                    row.spawn((
+                        GridCell::new(4),
+                        Sprite::from_image(asset_server.load("blue.jpg")),
+                        Transform::from_xyz(x as f32 * 125., 0., 0.),
+                    ));
+                }
+            });
+        y_at += 125.0;
+    }
 }
 
 /// The sprite is animated by changing its translation depending on the time that has passed since

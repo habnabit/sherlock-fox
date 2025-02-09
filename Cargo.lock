@@ -2023,6 +2023,7 @@ name = "furlock"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "fixedbitset 0.5.7",
 ]
 
 [[package]]
