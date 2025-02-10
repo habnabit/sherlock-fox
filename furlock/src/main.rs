@@ -9,7 +9,8 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddRow>()
-        .add_event::<UpdateCell>()
+        .add_event::<UpdateCellIndex>()
+        .add_event::<UpdateCellDisplay>()
         .register_type::<Puzzle>()
         .register_type::<PuzzleRow>()
         .register_type::<PuzzleCell>()
@@ -19,7 +20,7 @@ fn main() {
         .add_systems(
             Update,
             (
-                (interact_cell, cell_update).chain(),
+                (interact_cell, cell_update, cell_update_display).chain(),
                 (spawn_row, add_row).chain(),
             ),
         )
@@ -38,6 +39,19 @@ impl PuzzleCell {
     fn new(enabled: FixedBitSet) -> Self {
         PuzzleCell { enabled }
     }
+
+    fn apply(&mut self, index: usize, op: UpdateCellIndexOperation) {
+        use UpdateCellIndexOperation::*;
+        match op {
+            Clear => self.enabled.remove(index),
+            Set => self.enabled.insert(index),
+            Toggle => self.enabled.toggle(index),
+            Solo => {
+                self.enabled.remove_range(..);
+                self.enabled.insert(index);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Reflect)]
@@ -48,7 +62,7 @@ struct PuzzleRow {
 impl PuzzleRow {
     fn new(len: usize) -> Self {
         let mut bitset = FixedBitSet::with_capacity(len);
-        bitset.set_range(.., true);
+        bitset.insert_range(..);
         let cells = vec![PuzzleCell::new(bitset); len];
         PuzzleRow { cells }
     }
@@ -67,22 +81,39 @@ impl Puzzle {
     fn add_row(&mut self, row: PuzzleRow) {
         self.rows.push(row);
     }
+
+    fn cell(&self, loc: CellLoc) -> &PuzzleCell {
+        &self.rows[loc.row_nr].cells[loc.cell_nr]
+    }
+
+    fn cell_mut(&mut self, loc: CellLoc) -> &mut PuzzleCell {
+        &mut self.rows[loc.row_nr].cells[loc.cell_nr]
+    }
 }
 
 #[derive(Reflect, Debug, Component)]
 struct DisplayMatrix;
 
-#[derive(Reflect, Debug, Component, Hash, PartialEq, Eq)]
-struct DisplayCell {
+#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct CellLoc {
     row_nr: usize,
-    cell: usize,
+    cell_nr: usize,
+}
+
+#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct CellLocIndex {
+    loc: CellLoc,
+    index: usize,
 }
 
 #[derive(Reflect, Debug, Component)]
-struct DisplayCellToggle {
-    row_nr: usize,
-    cell: usize,
-    index: usize,
+struct DisplayCell {
+    loc: CellLoc,
+}
+
+#[derive(Reflect, Debug, Component)]
+struct DisplayCellButton {
+    index: CellLocIndex,
 }
 
 #[derive(Resource)]
@@ -96,9 +127,22 @@ struct AddRow {
 }
 
 #[derive(Event, Debug)]
-struct UpdateCell {
-    row_nr: usize,
-    cell: usize,
+struct UpdateCellIndex {
+    index: CellLocIndex,
+    op: UpdateCellIndexOperation,
+}
+
+#[derive(Event, Debug)]
+struct UpdateCellDisplay {
+    loc: CellLoc,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum UpdateCellIndexOperation {
+    Clear,
+    Set,
+    Toggle,
+    Solo,
 }
 
 fn spawn_row(
@@ -141,7 +185,8 @@ fn add_row(
                     BorderColor(css::REBECCA_PURPLE.into()),
                 ))
                 .with_children(|row_spawner| {
-                    for cell in 0..ev.len {
+                    for cell_nr in 0..ev.len {
+                        let loc = CellLoc { row_nr, cell_nr };
                         row_spawner
                             .spawn((
                                 Node {
@@ -154,7 +199,7 @@ fn add_row(
                                     ..Default::default()
                                 },
                                 BorderColor(css::STEEL_BLUE.into()),
-                                DisplayCell { row_nr, cell },
+                                DisplayCell { loc },
                             ))
                             .with_children(|cell_spawner| {
                                 for index in 0..ev.len {
@@ -170,10 +215,8 @@ fn add_row(
                                             BorderColor(css::YELLOW_GREEN.into()),
                                             BackgroundColor(css::DARK_SLATE_GRAY.into()),
                                             Button,
-                                            DisplayCellToggle {
-                                                row_nr,
-                                                cell,
-                                                index,
+                                            DisplayCellButton {
+                                                index: CellLocIndex { loc, index },
                                             },
                                         ))
                                         .observe(cell_clicked)
@@ -193,11 +236,11 @@ fn add_row(
 fn interact_cell(
     mut interaction_query: Query<
         (&Interaction, &mut BackgroundColor),
-        (Changed<Interaction>, With<Button>, With<DisplayCellToggle>),
+        (Changed<Interaction>, With<Button>, With<DisplayCellButton>),
     >,
 ) {
     for (interaction, mut color) in &mut interaction_query {
-        match dbg!(*interaction) {
+        match *interaction {
             Interaction::Pressed => {
                 *color = BackgroundColor(css::HOT_PINK.into());
             }
@@ -213,15 +256,13 @@ fn interact_cell(
 
 fn cell_clicked(
     ev: Trigger<Pointer<Up>>,
-    cell_query: Query<(&DisplayCellToggle, &Interaction)>,
+    cell_query: Query<(&DisplayCellButton, &Interaction)>,
     mut puzzle: Single<&mut Puzzle>,
-    mut writer: EventWriter<UpdateCell>,
+    mut writer: EventWriter<UpdateCellIndex>,
 ) {
     // info!("click ev={ev:?}");
     for (
-        &DisplayCellToggle {
-            row_nr,
-            cell,
+        &DisplayCellButton {
             index,
         },
         interaction,
@@ -229,8 +270,7 @@ fn cell_clicked(
     {
         // info!("cell={cell:?} int={interaction:?}");
         if matches!(interaction, Interaction::Pressed) {
-            puzzle.rows[row_nr].cells[cell].enabled.toggle(index);
-            writer.send(UpdateCell { row_nr, cell });
+            writer.send(UpdateCellIndex { index, op: UpdateCellIndexOperation::Toggle });
         }
     }
 }
@@ -238,20 +278,52 @@ fn cell_clicked(
 fn cell_update(
     cell_query: Query<(Entity, &DisplayCell)>,
     mut puzzle: Single<&mut Puzzle>,
-    mut reader: EventReader<UpdateCell>,
+    mut reader: EventReader<UpdateCellIndex>,
+    mut writer: EventWriter<UpdateCellDisplay>,
 ) {
     let entity_map = cell_query
         .iter()
-        .map(|(entity, cell)| (cell, entity))
+        .map(|(entity, cell)| (cell.loc, entity))
         .collect::<HashMap<_, _>>();
-    for &UpdateCell { row_nr, cell } in reader.read() {
-        let cell = DisplayCell { row_nr, cell };
-        let entity = entity_map.get(&cell);
-        let puzzle_cell = &puzzle.rows[cell.row_nr].cells[cell.cell];
-        info!(
-            "updating: cell={cell:?} entity={entity:?} state={:x?}",
-            puzzle_cell.enabled.as_slice()
-        );
+    for &UpdateCellIndex { index, op } in reader.read() {
+        let entity = entity_map.get(&index.loc);
+        let puzzle_cell = puzzle.cell_mut(index.loc);
+        puzzle_cell.apply(index.index, op);
+        // info!(
+        //     "updating: index={index:?} entity={entity:?} state={:x?}",
+        //     puzzle_cell.enabled.as_slice()
+        // );
+        writer.send(UpdateCellDisplay { loc: index.loc });
+    }
+}
+
+fn cell_update_display(
+    puzzle: Single<&Puzzle>,
+    mut cell_index_query: Query<(Entity, &DisplayCellButton, &mut BorderColor)>,
+    mut reader: EventReader<UpdateCellDisplay>,
+) {
+    let mut entity_map = {
+        let mut map = HashMap::new();
+        for (entity, &DisplayCellButton { index }, border_color) in &mut cell_index_query {
+            let v = map.entry(index.loc).or_insert_with(|| {
+                let n_cells = puzzle.rows[index.loc.row_nr].len();
+                (0..n_cells).map(|_| None).collect::<Vec<_>>()
+            });
+            v[index.index] = Some(border_color);
+        }
+        map
+    };
+    for &UpdateCellDisplay { loc } in reader.read() {
+        let cell = puzzle.cell(loc);
+        let Some(buttons) = entity_map.get_mut(&loc) else { unreachable!() };
+        for (e, button) in buttons.iter_mut().enumerate() {
+            let Some(ref mut border_color) = button else { unreachable!() };
+            if cell.enabled.contains(e) {
+                **border_color = BorderColor(css::YELLOW_GREEN.into());
+            } else {
+                **border_color = BorderColor(css::ORANGE_RED.into());
+            }
+        }
     }
 }
 
