@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use bevy::prelude::*;
+use bevy::{color::palettes::css, prelude::*};
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use fixedbitset::FixedBitSet;
 
@@ -90,7 +90,7 @@ fn spawn_row(
     config.timer.tick(time.delta());
     if config.timer.finished() {
         if puzzle.rows.len() < 4 {
-            writer.send(AddRow { len: 4 });
+            writer.send(AddRow { len: 5 });
         }
     }
 }
@@ -109,17 +109,48 @@ fn add_row(
         puzzle.add_row(PuzzleRow::new(ev.len));
         commands.entity(matrix).with_children(|matrix| {
             matrix
-                .spawn(Node {
-                    display: Display::Grid,
-                    grid_template_columns: RepeatedGridTrack::flex(ev.len as u16, 1.0),
-                    ..Default::default()
-                })
+                .spawn((
+                    Node {
+                        display: Display::Grid,
+                        grid_template_columns: RepeatedGridTrack::flex(ev.len as u16, 1.0),
+                        padding: UiRect::all(Val::Px(5.)),
+                        margin: UiRect::all(Val::Px(5.)),
+                        border: UiRect::all(Val::Px(1.)),
+                        ..Default::default()
+                    },
+                    BorderColor(css::REBECCA_PURPLE.into()),
+                ))
                 .with_children(|row| {
                     for cell in 0..ev.len {
-                        row.spawn((Text::new(format!("{row_nr}x{cell}")), DisplayCell {
-                            row_nr,
-                            cell,
-                        }));
+                        row.spawn((
+                            Node {
+                                display: Display::Flex,
+                                align_items: AlignItems::Center,
+                                justify_content: JustifyContent::SpaceEvenly,
+                                padding: UiRect::all(Val::Px(5.)),
+                                margin: UiRect::all(Val::Px(5.)),
+                                border: UiRect::all(Val::Px(1.)),
+                                ..Default::default()
+                            },
+                            BorderColor(css::STEEL_BLUE.into()),
+                            DisplayCell { row_nr, cell },
+                        ))
+                        .with_children(|cell| {
+                            for i in 0..ev.len {
+                                cell.spawn((
+                                    Node {
+                                        padding: UiRect::all(Val::Px(5.)),
+                                        margin: UiRect::all(Val::Px(5.)),
+                                        border: UiRect::all(Val::Px(1.)),
+                                        width: Val::Percent(100.),
+                                        ..Default::default()
+                                    },
+                                    BorderColor(css::YELLOW_GREEN.into()),
+                                    BackgroundColor(css::DARK_SLATE_GRAY.into()),
+                                ))
+                                .with_child(Text::new(format!("{i}")));
+                            }
+                        });
                     }
                 });
         });
