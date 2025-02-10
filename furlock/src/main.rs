@@ -15,7 +15,7 @@ fn main() {
         .register_type::<DisplayMatrix>()
         .register_type::<DisplayCell>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (spawn_row, add_row).chain())
+        .add_systems(Update, (click_cell, (spawn_row, add_row).chain()))
         // .add_systems(Update, sprite_movement)
         .run();
 }
@@ -63,6 +63,9 @@ impl Puzzle {
 }
 
 #[derive(Reflect, Debug, Component)]
+struct DisplaySingleButton;
+
+#[derive(Reflect, Debug, Component)]
 struct DisplayMatrix;
 
 #[derive(Reflect, Debug, Component)]
@@ -99,9 +102,9 @@ fn add_row(
     mut commands: Commands,
     mut reader: EventReader<AddRow>,
     mut puzzle: Single<&mut Puzzle>,
-    mut matrix: Single<(Entity, &mut Node, &DisplayMatrix)>,
+    mut matrix: Single<(Entity, &mut Node), With<DisplayMatrix>>,
 ) {
-    let (matrix, ref mut matrix_node, _) = *matrix;
+    let (matrix, ref mut matrix_node) = *matrix;
     let mut readjust_rows = false;
     for ev in reader.read() {
         readjust_rows = true;
@@ -147,6 +150,8 @@ fn add_row(
                                     },
                                     BorderColor(css::YELLOW_GREEN.into()),
                                     BackgroundColor(css::DARK_SLATE_GRAY.into()),
+                                    Button,
+                                    DisplaySingleButton,
                                 ))
                                 .with_child(Text::new(format!("{i}")));
                             }
@@ -158,6 +163,31 @@ fn add_row(
 
     if readjust_rows {
         matrix_node.grid_template_rows = RepeatedGridTrack::flex(puzzle.rows.len() as u16, 1.0);
+    }
+}
+
+fn click_cell(
+    mut interaction_query: Query<
+        (&Interaction, &mut BackgroundColor),
+        (
+            Changed<Interaction>,
+            With<Button>,
+            With<DisplaySingleButton>,
+        ),
+    >,
+) {
+    for (interaction, mut color) in &mut interaction_query {
+        match dbg!(*interaction) {
+            Interaction::Pressed => {
+                *color = BackgroundColor(css::HOT_PINK.into());
+            }
+            Interaction::Hovered => {
+                *color = BackgroundColor(css::DEEP_PINK.into());
+            }
+            Interaction::None => {
+                *color = BackgroundColor(css::DARK_SLATE_GRAY.into());
+            }
+        }
     }
 }
 
