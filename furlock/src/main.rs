@@ -1,11 +1,15 @@
 use bevy::prelude::*;
+use bevy_inspector_egui::prelude::*;
+use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use fixedbitset::FixedBitSet;
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins(WorldInspectorPlugin::new())
+        .register_type::<GridRow>()
         .add_systems(Startup, setup)
-        .add_systems(Update, sprite_movement)
+        // .add_systems(Update, sprite_movement)
         .run();
 }
 
@@ -23,15 +27,9 @@ impl GridCell {
     }
 }
 
-#[derive(Component)]
+#[derive(Reflect, Component)]
 struct GridRow {
     base: String,
-}
-
-#[derive(Component)]
-enum Direction {
-    Up,
-    Down,
 }
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
@@ -92,21 +90,4 @@ fn cell_clicked(ev: Trigger<Pointer<Down>>, sprites: Query<(&GridCell, &Parent)>
 }
 fn cell_unclicked(ev: Trigger<Pointer<Up>>, sprites: Query<(&GridCell, &Parent)>) {
     info!("unclicked:");
-}
-
-/// The sprite is animated by changing its translation depending on the time that has passed since
-/// the last frame.
-fn sprite_movement(time: Res<Time>, mut sprite_position: Query<(&mut Direction, &mut Transform)>) {
-    for (mut logo, mut transform) in &mut sprite_position {
-        match *logo {
-            Direction::Up => transform.translation.y += 150. * time.delta_secs(),
-            Direction::Down => transform.translation.y -= 150. * time.delta_secs(),
-        }
-
-        if transform.translation.y > 200. {
-            *logo = Direction::Down;
-        } else if transform.translation.y < -200. {
-            *logo = Direction::Up;
-        }
-    }
 }

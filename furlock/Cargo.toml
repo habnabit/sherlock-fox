@@ -5,4 +5,5 @@ edition = "2021"
 
 [dependencies]
 bevy = { version = "0.15.2", features = ["dynamic_linking", "jpeg"] }
+bevy-inspector-egui = "0.29.1"
 fixedbitset = "0.5.7"
