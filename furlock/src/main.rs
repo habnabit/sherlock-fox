@@ -16,7 +16,13 @@ fn main() {
         .register_type::<DisplayMatrix>()
         .register_type::<DisplayCell>()
         .add_systems(Startup, setup)
-        .add_systems(Update, ((interact_cell, cell_update).chain(), (spawn_row, add_row).chain()))
+        .add_systems(
+            Update,
+            (
+                (interact_cell, cell_update).chain(),
+                (spawn_row, add_row).chain(),
+            ),
+        )
         // .add_systems(Update, sprite_movement)
         .run();
 }
@@ -136,38 +142,44 @@ fn add_row(
                 ))
                 .with_children(|row_spawner| {
                     for cell in 0..ev.len {
-                        row_spawner.spawn((
-                            Node {
-                                display: Display::Flex,
-                                align_items: AlignItems::Center,
-                                justify_content: JustifyContent::SpaceEvenly,
-                                padding: UiRect::all(Val::Px(5.)),
-                                margin: UiRect::all(Val::Px(5.)),
-                                border: UiRect::all(Val::Px(1.)),
-                                ..Default::default()
-                            },
-                            BorderColor(css::STEEL_BLUE.into()),
-                            DisplayCell { row_nr, cell },
-                        ))
-                        .with_children(|cell_spawner| {
-                            for index in 0..ev.len {
-                                cell_spawner.spawn((
-                                    Node {
-                                        padding: UiRect::all(Val::Px(5.)),
-                                        margin: UiRect::all(Val::Px(5.)),
-                                        border: UiRect::all(Val::Px(1.)),
-                                        width: Val::Percent(100.),
-                                        ..Default::default()
-                                    },
-                                    BorderColor(css::YELLOW_GREEN.into()),
-                                    BackgroundColor(css::DARK_SLATE_GRAY.into()),
-                                    Button,
-                                    DisplayCellToggle { row_nr, cell, index },
-                                ))
-                                .observe(cell_clicked)
-                                .with_child(Text::new(format!("{index}")));
-                            }
-                        });
+                        row_spawner
+                            .spawn((
+                                Node {
+                                    display: Display::Flex,
+                                    align_items: AlignItems::Center,
+                                    justify_content: JustifyContent::SpaceEvenly,
+                                    padding: UiRect::all(Val::Px(5.)),
+                                    margin: UiRect::all(Val::Px(5.)),
+                                    border: UiRect::all(Val::Px(1.)),
+                                    ..Default::default()
+                                },
+                                BorderColor(css::STEEL_BLUE.into()),
+                                DisplayCell { row_nr, cell },
+                            ))
+                            .with_children(|cell_spawner| {
+                                for index in 0..ev.len {
+                                    cell_spawner
+                                        .spawn((
+                                            Node {
+                                                padding: UiRect::all(Val::Px(5.)),
+                                                margin: UiRect::all(Val::Px(5.)),
+                                                border: UiRect::all(Val::Px(1.)),
+                                                width: Val::Percent(100.),
+                                                ..Default::default()
+                                            },
+                                            BorderColor(css::YELLOW_GREEN.into()),
+                                            BackgroundColor(css::DARK_SLATE_GRAY.into()),
+                                            Button,
+                                            DisplayCellToggle {
+                                                row_nr,
+                                                cell,
+                                                index,
+                                            },
+                                        ))
+                                        .observe(cell_clicked)
+                                        .with_child(Text::new(format!("{index}")));
+                                }
+                            });
                     }
                 });
         });
@@ -181,11 +193,7 @@ fn add_row(
 fn interact_cell(
     mut interaction_query: Query<
         (&Interaction, &mut BackgroundColor),
-        (
-            Changed<Interaction>,
-            With<Button>,
-            With<DisplayCellToggle>,
-        ),
+        (Changed<Interaction>, With<Button>, With<DisplayCellToggle>),
     >,
 ) {
     for (interaction, mut color) in &mut interaction_query {
@@ -203,11 +211,22 @@ fn interact_cell(
     }
 }
 
-fn cell_clicked(ev: Trigger<Pointer<Up>>, cell_query: Query<(&DisplayCellToggle, &Interaction)>, 
-mut puzzle: Single<&mut Puzzle>, mut writer: EventWriter<UpdateCell>,
+fn cell_clicked(
+    ev: Trigger<Pointer<Up>>,
+    cell_query: Query<(&DisplayCellToggle, &Interaction)>,
+    mut puzzle: Single<&mut Puzzle>,
+    mut writer: EventWriter<UpdateCell>,
 ) {
     // info!("click ev={ev:?}");
-    for (&DisplayCellToggle { row_nr, cell, index }, interaction) in &cell_query {
+    for (
+        &DisplayCellToggle {
+            row_nr,
+            cell,
+            index,
+        },
+        interaction,
+    ) in &cell_query
+    {
         // info!("cell={cell:?} int={interaction:?}");
         if matches!(interaction, Interaction::Pressed) {
             puzzle.rows[row_nr].cells[cell].enabled.toggle(index);
@@ -216,15 +235,23 @@ mut puzzle: Single<&mut Puzzle>, mut writer: EventWriter<UpdateCell>,
     }
 }
 
-fn cell_update(cell_query: Query<(Entity, &DisplayCell)>, 
-mut puzzle: Single<&mut Puzzle>, mut reader: EventReader<UpdateCell>,
+fn cell_update(
+    cell_query: Query<(Entity, &DisplayCell)>,
+    mut puzzle: Single<&mut Puzzle>,
+    mut reader: EventReader<UpdateCell>,
 ) {
-    let entity_map = cell_query.iter().map(|(entity, cell)| (cell, entity)).collect::<HashMap<_, _>>();
+    let entity_map = cell_query
+        .iter()
+        .map(|(entity, cell)| (cell, entity))
+        .collect::<HashMap<_, _>>();
     for &UpdateCell { row_nr, cell } in reader.read() {
         let cell = DisplayCell { row_nr, cell };
         let entity = entity_map.get(&cell);
         let puzzle_cell = &puzzle.rows[cell.row_nr].cells[cell.cell];
-        info!("updating: cell={cell:?} entity={entity:?} state={:x?}", puzzle_cell.enabled.as_slice());
+        info!(
+            "updating: cell={cell:?} entity={entity:?} state={:x?}",
+            puzzle_cell.enabled.as_slice()
+        );
     }
 }
 
