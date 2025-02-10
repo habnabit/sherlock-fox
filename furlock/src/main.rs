@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use bevy::{color::palettes::css, prelude::*};
+use bevy::{color::palettes::css, prelude::*, utils::hashbrown::HashMap};
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use fixedbitset::FixedBitSet;
 
@@ -9,13 +9,14 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddRow>()
+        .add_event::<UpdateCell>()
         .register_type::<Puzzle>()
         .register_type::<PuzzleRow>()
         .register_type::<PuzzleCell>()
         .register_type::<DisplayMatrix>()
         .register_type::<DisplayCell>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (interact_cell, (spawn_row, add_row).chain()))
+        .add_systems(Update, ((interact_cell, cell_update).chain(), (spawn_row, add_row).chain()))
         // .add_systems(Update, sprite_movement)
         .run();
 }
@@ -65,7 +66,7 @@ impl Puzzle {
 #[derive(Reflect, Debug, Component)]
 struct DisplayMatrix;
 
-#[derive(Reflect, Debug, Component)]
+#[derive(Reflect, Debug, Component, Hash, PartialEq, Eq)]
 struct DisplayCell {
     row_nr: usize,
     cell: usize,
@@ -86,6 +87,12 @@ struct PuzzleSpawn {
 #[derive(Event, Debug)]
 struct AddRow {
     len: usize,
+}
+
+#[derive(Event, Debug)]
+struct UpdateCell {
+    row_nr: usize,
+    cell: usize,
 }
 
 fn spawn_row(
@@ -157,6 +164,7 @@ fn add_row(
                                     Button,
                                     DisplayCellToggle { row_nr, cell, index },
                                 ))
+                                .observe(cell_clicked)
                                 .with_child(Text::new(format!("{index}")));
                             }
                         });
@@ -195,11 +203,36 @@ fn interact_cell(
     }
 }
 
+fn cell_clicked(ev: Trigger<Pointer<Up>>, cell_query: Query<(&DisplayCellToggle, &Interaction)>, 
+mut puzzle: Single<&mut Puzzle>, mut writer: EventWriter<UpdateCell>,
+) {
+    // info!("click ev={ev:?}");
+    for (&DisplayCellToggle { row_nr, cell, index }, interaction) in &cell_query {
+        // info!("cell={cell:?} int={interaction:?}");
+        if matches!(interaction, Interaction::Pressed) {
+            puzzle.rows[row_nr].cells[cell].enabled.toggle(index);
+            writer.send(UpdateCell { row_nr, cell });
+        }
+    }
+}
+
+fn cell_update(cell_query: Query<(Entity, &DisplayCell)>, 
+mut puzzle: Single<&mut Puzzle>, mut reader: EventReader<UpdateCell>,
+) {
+    let entity_map = cell_query.iter().map(|(entity, cell)| (cell, entity)).collect::<HashMap<_, _>>();
+    for &UpdateCell { row_nr, cell } in reader.read() {
+        let cell = DisplayCell { row_nr, cell };
+        let entity = entity_map.get(&cell);
+        let puzzle_cell = &puzzle.rows[cell.row_nr].cells[cell.cell];
+        info!("updating: cell={cell:?} entity={entity:?} state={:x?}", puzzle_cell.enabled.as_slice());
+    }
+}
+
 fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
     commands.spawn(<Puzzle as Default>::default());
     commands.insert_resource(PuzzleSpawn {
-        timer: Timer::new(Duration::from_secs_f32(0.5), TimerMode::Repeating),
+        timer: Timer::new(Duration::from_secs_f32(0.1), TimerMode::Repeating),
     });
 
     commands
