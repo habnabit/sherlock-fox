@@ -24,7 +24,7 @@ fn main() {
 // #[reflect(from_reflect = false)]
 struct PuzzleCell {
     #[reflect(ignore)]
-    enabled: FixedBitSet
+    enabled: FixedBitSet,
 }
 
 impl PuzzleCell {
@@ -104,19 +104,17 @@ fn add_row(
         readjust_rows = true;
         puzzle.rows.push(PuzzleRow::new(ev.len));
         commands.entity(matrix).with_children(|matrix| {
-            matrix.spawn((
-                Node {
+            matrix
+                .spawn((Node {
                     display: Display::Grid,
                     grid_template_columns: RepeatedGridTrack::flex(ev.len as u16, 1.0),
                     ..Default::default()
-                },
-            ))
-            .with_children(|row| {
-                for x in 0..ev.len {
-                    row
-                        .spawn(Text::new(format!("{x}")));
-                }
-            });
+                },))
+                .with_children(|row| {
+                    for x in 0..ev.len {
+                        row.spawn(Text::new(format!("{x}")));
+                    }
+                });
         });
     }
 
@@ -128,17 +126,17 @@ fn add_row(
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.spawn(Camera2d);
     commands.spawn(<Puzzle as Default>::default());
-    commands.insert_resource(PuzzleSpawn { timer: Timer::new(Duration::from_secs_f32(0.5), TimerMode::Repeating) });
+    commands.insert_resource(PuzzleSpawn {
+        timer: Timer::new(Duration::from_secs_f32(0.5), TimerMode::Repeating),
+    });
 
     commands
-        .spawn((
-            Node {
-                display: Display::Grid,
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                ..Default::default()
-            },
-        ))
+        .spawn((Node {
+            display: Display::Grid,
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            ..Default::default()
+        },))
         .with_children(|root| {
             root.spawn((
                 Node {
@@ -148,7 +146,6 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                 DisplayMatrix,
             ));
         });
-
 
     //         for base_char in "ABCD".chars() {
     //             let base: String = base_char.into();
