@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use bevy::{color::palettes::css, prelude::*, utils::hashbrown::HashMap};
+use bevy::{color::palettes::css, input::common_conditions::input_just_released, prelude::*, utils::hashbrown::HashMap, window::PrimaryWindow};
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use fixedbitset::FixedBitSet;
 
@@ -11,6 +11,7 @@ fn main() {
         .add_event::<AddRow>()
         .add_event::<UpdateCellIndex>()
         .add_event::<UpdateCellDisplay>()
+        .add_event::<StartCellDrag>()
         .register_type::<Puzzle>()
         .register_type::<PuzzleRow>()
         .register_type::<PuzzleCell>()
@@ -20,6 +21,7 @@ fn main() {
         .add_systems(
             Update,
             (
+                (cell_start_drag, cell_continue_drag, cell_release_drag.run_if(input_just_released(MouseButton::Left))).chain(),
                 (interact_cell, cell_update, cell_update_display).chain(),
                 (spawn_row, add_row).chain(),
             ),
@@ -92,6 +94,9 @@ impl Puzzle {
 }
 
 #[derive(Reflect, Debug, Component)]
+struct NodeRoot;
+
+#[derive(Reflect, Debug, Component)]
 struct DisplayMatrix;
 
 #[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -136,6 +141,16 @@ struct UpdateCellIndex {
 struct UpdateCellDisplay {
     loc: CellLoc,
 }
+
+#[derive(Event, Debug)]
+struct StartCellDrag {
+    entity: Entity,
+    x: f32,
+    y: f32,
+}
+
+#[derive(Reflect, Debug, Component)]
+struct DragTarget;
 
 #[derive(Debug, Clone, Copy)]
 enum UpdateCellIndexOperation {
@@ -219,7 +234,8 @@ fn add_row(
                                                 index: CellLocIndex { loc, index },
                                             },
                                         ))
-                                        .observe(cell_clicked)
+                                        .observe(cell_clicked_down)
+                                        .observe(cell_clicked_up)
                                         .with_child(Text::new(format!("{index}")));
                                 }
                             });
@@ -254,7 +270,68 @@ fn interact_cell(
     }
 }
 
-fn cell_clicked(
+fn cell_clicked_down(
+    // mut commands: Commands,
+    ev: Trigger<Pointer<Down>>,
+    cell_query: Query<(Entity, &DisplayCellButton, &Interaction, &GlobalTransform)>,
+    mut writer: EventWriter<StartCellDrag>,
+) {
+    for (entity, button, interaction, &transform) in &cell_query {
+        if matches!(interaction, Interaction::Hovered) {
+            info!("down ev={:#?} button={:#?} int={:#?} transform={:#?} local={:#?} iso={:#?}", ev, button, interaction, transform, transform.compute_transform(), transform.to_isometry());
+            let loc = &ev.event().pointer_location;
+            writer.send(dbg!(StartCellDrag { entity, x: loc.position.x, y: loc.position.y }));
+        }
+    }
+}
+
+fn cell_start_drag(
+    mut commands: Commands,
+    mut cell_index_query: Query<&DisplayCellButton>,
+    mut reader: EventReader<StartCellDrag>,
+    root: Single<Entity, With<NodeRoot>>,
+) {
+    for &StartCellDrag { entity, x, y } in reader.read() {
+        commands.entity(*root).with_child((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(x),
+                top: Val::Px(y),
+                ..Default::default()
+            },
+            Text::new("drag"),
+            DragTarget,
+        ));
+        // let () = cell_index_query.get(entity);
+    }
+}
+
+fn cell_continue_drag(
+    mut cell: Query<&mut Node, With<DragTarget>>,
+    // mut cursor_world_pos: ResMut<CursorWorldPos>,
+    primary_window: Query<&Window, With<PrimaryWindow>>,
+    // q_camera: Single<(&Camera, &GlobalTransform)>,
+) {
+    // let (main_camera, main_camera_transform) = *q_camera;
+    // Get the cursor position in the world
+    let Some(loc) = primary_window.iter().next().and_then(|w| w.cursor_position()) else { return };
+    // dbg!(loc);
+    for mut node in &mut cell {
+        node.left = Val::Px(loc.x);
+        node.top = Val::Px(loc.y);
+    }
+}
+
+fn cell_release_drag(
+    mut commands: Commands,
+    mut cell: Query<Entity, With<DragTarget>>,
+) {
+    for entity in &cell {
+        commands.entity(entity).despawn_recursive();
+    }
+}
+
+fn cell_clicked_up(
     ev: Trigger<Pointer<Up>>,
     cell_query: Query<(&DisplayCellButton, &Interaction)>,
     mut puzzle: Single<&mut Puzzle>,
@@ -340,7 +417,7 @@ fn setup(mut commands: Commands) {
             width: Val::Percent(100.0),
             height: Val::Percent(100.0),
             ..Default::default()
-        },))
+        },NodeRoot))
         .with_children(|root| {
             root.spawn((
                 Node {
