@@ -66,7 +66,10 @@ impl Puzzle {
 struct DisplayMatrix;
 
 #[derive(Reflect, Debug, Component)]
-struct DisplayCell;
+struct DisplayCell {
+    row_nr: usize,
+    cell: usize,
+}
 
 #[derive(Resource)]
 struct PuzzleSpawn {
@@ -102,17 +105,21 @@ fn add_row(
     let mut readjust_rows = false;
     for ev in reader.read() {
         readjust_rows = true;
-        puzzle.rows.push(PuzzleRow::new(ev.len));
+        let row_nr = puzzle.rows.len();
+        puzzle.add_row(PuzzleRow::new(ev.len));
         commands.entity(matrix).with_children(|matrix| {
             matrix
-                .spawn((Node {
+                .spawn(Node {
                     display: Display::Grid,
                     grid_template_columns: RepeatedGridTrack::flex(ev.len as u16, 1.0),
                     ..Default::default()
-                },))
+                })
                 .with_children(|row| {
-                    for x in 0..ev.len {
-                        row.spawn(Text::new(format!("{x}")));
+                    for cell in 0..ev.len {
+                        row.spawn((Text::new(format!("{row_nr}x{cell}")), DisplayCell {
+                            row_nr,
+                            cell,
+                        }));
                     }
                 });
         });
@@ -123,7 +130,7 @@ fn add_row(
     }
 }
 
-fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
     commands.spawn(<Puzzle as Default>::default());
     commands.insert_resource(PuzzleSpawn {
@@ -146,24 +153,4 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
                 DisplayMatrix,
             ));
         });
-
-    //         for base_char in "ABCD".chars() {
-    //             let base: String = base_char.into();
-    //             root
-    //                 .spawn((
-    //                     GridRow { base },
-    //                     // Transform::from_xyz(-200., y_at, 0.),
-    //                 ))
-    //             }
-    //         });
 }
-
-// fn cell_clicked(ev: Trigger<Pointer<Down>>, sprites: Query<(&GridCell, &Parent)>) {
-//     info!("clicked:");
-//     for (cell, parent) in sprites.iter() {
-//         info!("  {:?}", cell);
-//     }
-// }
-// fn cell_unclicked(ev: Trigger<Pointer<Up>>, sprites: Query<(&GridCell, &Parent)>) {
-//     info!("unclicked:");
-// }
