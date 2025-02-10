@@ -9,7 +9,7 @@ fn main() {
         .run();
 }
 
-#[derive(Component)]
+#[derive(Debug, Component)]
 enum GridCell {
     One(usize),
     Many(FixedBitSet),
@@ -37,26 +37,61 @@ enum Direction {
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.spawn(Camera2d);
 
-    let mut y_at = -200.0;
-    for base in "ABCD".chars() {
-        let base: String = base.into();
-        commands
-            .spawn((
-                GridRow { base },
-                Visibility::default(),
-                Transform::from_xyz(-200., y_at, 0.),
-            ))
-            .with_children(|row| {
-                for x in 0..4 {
-                    row.spawn((
-                        GridCell::new(4),
-                        Sprite::from_image(asset_server.load("blue.jpg")),
-                        Transform::from_xyz(x as f32 * 125., 0., 0.),
-                    ));
+    commands
+        .spawn((
+            Node {
+                display: Display::Grid,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                grid_template_rows: RepeatedGridTrack::flex(4, 1.0),
+                ..Default::default()
+            },
+        ))
+        .with_children(|root| {
+            for base_char in "ABCD".chars() {
+                let base: String = base_char.into();
+                root
+                    .spawn((
+                        GridRow { base },
+                        Visibility::default(),
+                        Node {
+                            display: Display::Grid,
+                            width: Val::Percent(100.0),
+                            height: Val::Percent(100.0),
+                            grid_template_columns: RepeatedGridTrack::flex(4, 1.0),
+                            ..Default::default()
+                        },
+                        // Transform::from_xyz(-200., y_at, 0.),
+                    ))
+                    .with_children(|row| {
+                        for x in 0..4 {
+                            row
+                                .spawn((
+                                    GridCell::new(4),
+                                    Sprite::from_image(asset_server.load("blue.jpg")),
+                                    // Transform::from_xyz(x as f32 * 125., 0., 0.),
+                                    Node {
+                                        ..Default::default()
+                                    },
+                                ))
+                                .with_child(Text::new(format!("{base_char}{x}")))
+                                .observe(cell_clicked)
+                                .observe(cell_unclicked)
+                                ;
+                        }
+                    });
                 }
             });
-        y_at += 125.0;
+}
+
+fn cell_clicked(ev: Trigger<Pointer<Down>>, sprites: Query<(&GridCell, &Parent)>) {
+    info!("clicked:");
+    for (cell, parent) in sprites.iter() {
+        info!("  {:?}", cell);
     }
+}
+fn cell_unclicked(ev: Trigger<Pointer<Up>>, sprites: Query<(&GridCell, &Parent)>) {
+    info!("unclicked:");
 }
 
 /// The sprite is animated by changing its translation depending on the time that has passed since
