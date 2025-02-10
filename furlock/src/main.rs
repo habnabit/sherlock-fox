@@ -15,7 +15,7 @@ fn main() {
         .register_type::<DisplayMatrix>()
         .register_type::<DisplayCell>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (click_cell, (spawn_row, add_row).chain()))
+        .add_systems(Update, (interact_cell, (spawn_row, add_row).chain()))
         // .add_systems(Update, sprite_movement)
         .run();
 }
@@ -63,15 +63,19 @@ impl Puzzle {
 }
 
 #[derive(Reflect, Debug, Component)]
-struct DisplaySingleButton;
-
-#[derive(Reflect, Debug, Component)]
 struct DisplayMatrix;
 
 #[derive(Reflect, Debug, Component)]
 struct DisplayCell {
     row_nr: usize,
     cell: usize,
+}
+
+#[derive(Reflect, Debug, Component)]
+struct DisplayCellToggle {
+    row_nr: usize,
+    cell: usize,
+    index: usize,
 }
 
 #[derive(Resource)]
@@ -110,8 +114,8 @@ fn add_row(
         readjust_rows = true;
         let row_nr = puzzle.rows.len();
         puzzle.add_row(PuzzleRow::new(ev.len));
-        commands.entity(matrix).with_children(|matrix| {
-            matrix
+        commands.entity(matrix).with_children(|matrix_spawner| {
+            matrix_spawner
                 .spawn((
                     Node {
                         display: Display::Grid,
@@ -123,9 +127,9 @@ fn add_row(
                     },
                     BorderColor(css::REBECCA_PURPLE.into()),
                 ))
-                .with_children(|row| {
+                .with_children(|row_spawner| {
                     for cell in 0..ev.len {
-                        row.spawn((
+                        row_spawner.spawn((
                             Node {
                                 display: Display::Flex,
                                 align_items: AlignItems::Center,
@@ -138,9 +142,9 @@ fn add_row(
                             BorderColor(css::STEEL_BLUE.into()),
                             DisplayCell { row_nr, cell },
                         ))
-                        .with_children(|cell| {
-                            for i in 0..ev.len {
-                                cell.spawn((
+                        .with_children(|cell_spawner| {
+                            for index in 0..ev.len {
+                                cell_spawner.spawn((
                                     Node {
                                         padding: UiRect::all(Val::Px(5.)),
                                         margin: UiRect::all(Val::Px(5.)),
@@ -151,9 +155,9 @@ fn add_row(
                                     BorderColor(css::YELLOW_GREEN.into()),
                                     BackgroundColor(css::DARK_SLATE_GRAY.into()),
                                     Button,
-                                    DisplaySingleButton,
+                                    DisplayCellToggle { row_nr, cell, index },
                                 ))
-                                .with_child(Text::new(format!("{i}")));
+                                .with_child(Text::new(format!("{index}")));
                             }
                         });
                     }
@@ -166,13 +170,13 @@ fn add_row(
     }
 }
 
-fn click_cell(
+fn interact_cell(
     mut interaction_query: Query<
         (&Interaction, &mut BackgroundColor),
         (
             Changed<Interaction>,
             With<Button>,
-            With<DisplaySingleButton>,
+            With<DisplayCellToggle>,
         ),
     >,
 ) {
