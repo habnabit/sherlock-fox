@@ -14,18 +14,24 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddRow>()
-        .add_event::<UpdateCellIndex>()
+        .add_event::<StartButtonDrag>()
         .add_event::<UpdateCellDisplay>()
-        .add_event::<StartCellDrag>()
-        .register_type::<Puzzle>()
-        .register_type::<PuzzleRow>()
-        .register_type::<PuzzleCell>()
-        .register_type::<DisplayMatrix>()
+        .add_event::<UpdateCellIndex>()
+        .register_type::<CellLoc>()
+        .register_type::<CellLocIndex>()
         .register_type::<DisplayCell>()
+        .register_type::<DisplayCellButton>()
+        .register_type::<DisplayMatrix>()
+        .register_type::<DisplayRow>()
+        .register_type::<FitWithin>()
+        .register_type::<Puzzle>()
+        .register_type::<PuzzleCell>()
+        .register_type::<PuzzleRow>()
         .add_systems(Startup, setup)
         .add_systems(
             Update,
             (
+                (fit_inside_window, fit_inside_matrix, fit_to_transform).chain(),
                 // (
                 //     cell_start_drag,
                 //     cell_continue_drag,
@@ -112,11 +118,16 @@ impl Puzzle {
     }
 }
 
-#[derive(Reflect, Debug, Component)]
-struct NodeRoot;
+#[derive(Reflect, Debug, Component, Default)]
+struct FitWithin(Rect);
 
 #[derive(Reflect, Debug, Component)]
 struct DisplayMatrix;
+
+#[derive(Reflect, Debug, Component)]
+struct DisplayRow {
+    row_nr: usize,
+}
 
 #[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct CellLoc {
@@ -162,7 +173,7 @@ struct UpdateCellDisplay {
 }
 
 #[derive(Event, Debug)]
-struct StartCellDrag {
+struct StartButtonDrag {
     entity: Entity,
     x: f32,
     y: f32,
@@ -229,12 +240,18 @@ fn add_row(
         let transform = puzzle.add_row(PuzzleRow::new(colors));
         commands.entity(*matrix).with_children(|matrix_spawner| {
             matrix_spawner
-                .spawn((transform, InheritedVisibility::VISIBLE))
+                .spawn((
+                    Transform::default(),
+                    InheritedVisibility::VISIBLE,
+                    FitWithin::default(),
+                    DisplayRow { row_nr },
+                ))
                 .with_children(|row_spawner| {
                     for cell_nr in 0..ev.len {
                         let loc = CellLoc { row_nr, cell_nr };
                         row_spawner
                             .spawn((
+                                // Transform::default(),
                                 Transform::from_xyz(200. * cell_nr as f32, 0., 0.),
                                 InheritedVisibility::VISIBLE,
                                 DisplayCell { loc },
@@ -247,6 +264,7 @@ fn add_row(
                                                 puzzle.rows[row_nr].colors[index],
                                                 Vec2::new(25., 25.),
                                             ),
+                                            // Transform::default(),
                                             Transform::from_xyz(30. * index as f32, 0., 0.),
                                             DisplayCellButton {
                                                 index: CellLocIndex { loc, index },
@@ -263,6 +281,56 @@ fn add_row(
                     }
                 });
         });
+    }
+}
+
+fn fit_inside_window(
+    q_primary_window: Single<&Window, With<PrimaryWindow>>,
+    q_camera: Single<(&Camera, &GlobalTransform)>,
+    mut q_fit_root: Query<&mut FitWithin, Without<Parent>>,
+    // parent: Query<()>,
+    // mut child: Query<()>,
+) {
+    let (camera, camera_transform) = *q_camera;
+    let Some(logical_viewport) = camera.logical_viewport_rect() else {
+        return;
+    };
+    for mut fit_within in &mut q_fit_root {
+        *fit_within = FitWithin(logical_viewport);
+    }
+}
+
+fn fit_inside_matrix(
+    q_parent: Query<&FitWithin, (With<DisplayMatrix>, Without<DisplayRow>)>,
+    mut q_child: Query<(&mut FitWithin, &Parent, &DisplayRow)>,
+) {
+    let mut row_map = HashMap::<Entity, _>::new();
+    for (fit_within, parent, display_row) in &mut q_child {
+        let Ok(within) = q_parent.get(**parent) else {
+            unreachable!()
+        };
+        let (_, children) = row_map.entry(**parent).or_insert_with(|| (within, vec![]));
+        children.push((display_row, fit_within));
+    }
+    for (within, mut children) in row_map.into_values() {
+        children.sort_by_key(|(row, _)| row.row_nr);
+        let fit_height = within.0.height();
+        let row_height = fit_height / children.len() as f32;
+        let row_size = Vec2::new(within.0.width(), row_height);
+        let mut current_y = row_height / -2.;
+        for (display_row, mut fit_within) in children {
+            // dbg!(display_row);
+            let row_rect = Rect::from_center_size(Vec2::new(0., current_y), row_size);
+            *fit_within = FitWithin(row_rect);
+            current_y -= row_height;
+        }
+    }
+}
+
+fn fit_to_transform(mut q_fit: Query<(&FitWithin, &mut Transform)>) {
+    for (fit, mut transform) in &mut q_fit {
+        let center = fit.0.center();
+        *transform = Transform::from_xyz(-center.x, -center.y, 0.);
     }
 }
 
@@ -290,22 +358,24 @@ fn interact_cell(
 fn cell_clicked_down(
     // mut commands: Commands,
     ev: Trigger<Pointer<Down>>,
-    cell_query: Query<(Entity, &DisplayCellButton, &Interaction, &GlobalTransform)>,
-    mut writer: EventWriter<StartCellDrag>,
+    cell_query: Query<(Entity, &DisplayCellButton, &GlobalTransform)>,
+    mut writer: EventWriter<StartButtonDrag>,
 ) {
-    for (entity, button, interaction, &transform) in &cell_query {
-        if matches!(interaction, Interaction::Hovered) {
+    for (entity, button, &transform) in &cell_query {
+        // if matches!(interaction, Interaction::Hovered) {
+        if true {
             info!(
                 "down ev={:#?} button={:#?} int={:#?} transform={:#?} local={:#?} iso={:#?}",
                 ev,
                 button,
-                interaction,
+                (),
+                // interaction,
                 transform,
                 transform.compute_transform(),
                 transform.to_isometry()
             );
             let loc = &ev.event().pointer_location;
-            writer.send(dbg!(StartCellDrag {
+            writer.send(dbg!(StartButtonDrag {
                 entity,
                 x: loc.position.x,
                 y: loc.position.y
@@ -317,10 +387,10 @@ fn cell_clicked_down(
 fn cell_start_drag(
     mut commands: Commands,
     mut cell_index_query: Query<&DisplayCellButton>,
-    mut reader: EventReader<StartCellDrag>,
-    root: Single<Entity, With<NodeRoot>>,
+    mut reader: EventReader<StartButtonDrag>,
+    root: Single<Entity>,
 ) {
-    for &StartCellDrag { entity, x, y } in reader.read() {
+    for &StartButtonDrag { entity, x, y } in reader.read() {
         commands.entity(*root).with_child((
             Node {
                 position_type: PositionType::Absolute,
@@ -339,7 +409,7 @@ fn cell_continue_drag(
     mut cell: Query<&mut Node, With<DragTarget>>,
     // mut cursor_world_pos: ResMut<CursorWorldPos>,
     primary_window: Query<&Window, With<PrimaryWindow>>,
-    // q_camera: Single<(&Camera, &GlobalTransform)>,
+    q_camera: Single<(&Camera, &GlobalTransform)>,
 ) {
     // let (main_camera, main_camera_transform) = *q_camera;
     // Get the cursor position in the world
@@ -446,7 +516,8 @@ fn setup(mut commands: Commands) {
 
     commands.spawn((
         DisplayMatrix,
-        <Transform as Default>::default(),
+        FitWithin::default(),
+        Transform::default(),
         InheritedVisibility::VISIBLE,
     ));
     commands.insert_resource(SeededRng(ChaCha8Rng::from_os_rng()));
