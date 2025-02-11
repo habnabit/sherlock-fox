@@ -11,6 +11,7 @@ use rand_chacha::ChaCha8Rng;
 
 fn main() {
     App::new()
+        .init_resource::<SeededRng>()
         .add_plugins(DefaultPlugins)
         .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddRow>()
@@ -28,6 +29,7 @@ fn main() {
         .register_type::<Puzzle>()
         .register_type::<PuzzleCell>()
         .register_type::<PuzzleRow>()
+        .register_type::<SeededRng>()
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -42,7 +44,11 @@ fn main() {
                     show_fit,
                 )
                     .chain(),
-                (mouse_inside_window, interact_cell).chain(),
+                (
+                    mouse_inside_window.run_if(any_with_component::<PrimaryWindow>),
+                    interact_cell,
+                )
+                    .chain(),
                 (
                     cell_start_drag,
                     cell_continue_drag,
@@ -57,11 +63,17 @@ fn main() {
         .run();
 }
 
-#[derive(Resource)]
-struct SeededRng(ChaCha8Rng);
+#[derive(Resource, Reflect)]
+#[reflect(from_reflect = false)]
+struct SeededRng(#[reflect(ignore)] ChaCha8Rng);
+
+impl FromWorld for SeededRng {
+    fn from_world(_world: &mut World) -> Self {
+        SeededRng(ChaCha8Rng::from_os_rng())
+    }
+}
 
 #[derive(Debug, Clone, Reflect)]
-// #[reflect(from_reflect = false)]
 struct PuzzleCell {
     #[reflect(ignore)]
     enabled: FixedBitSet,
@@ -776,5 +788,4 @@ fn setup(mut commands: Commands) {
         FitWithinBundle::new(),
         // RandomColorSprite::new(),
     ));
-    commands.insert_resource(SeededRng(ChaCha8Rng::from_os_rng()));
 }
