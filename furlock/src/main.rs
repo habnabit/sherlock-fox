@@ -1,9 +1,6 @@
 use std::time::Duration;
 
-use bevy::{
-    color::palettes::css, input::common_conditions::input_just_released, prelude::*,
-    utils::hashbrown::HashMap, window::PrimaryWindow,
-};
+use bevy::{color::palettes::css, prelude::*, utils::hashbrown::HashMap, window::PrimaryWindow};
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use fixedbitset::FixedBitSet;
 use rand::{distr::Distribution, seq::SliceRandom, Rng, SeedableRng};
@@ -17,6 +14,7 @@ fn main() {
         .add_event::<StartButtonDrag>()
         .add_event::<UpdateCellDisplay>()
         .add_event::<UpdateCellIndex>()
+        .register_type::<AssignRandomColor>()
         .register_type::<CellLoc>()
         .register_type::<CellLocIndex>()
         .register_type::<DisplayCell>()
@@ -31,7 +29,16 @@ fn main() {
         .add_systems(
             Update,
             (
-                (fit_inside_window, fit_inside_matrix, fit_to_transform).chain(),
+                assign_random_color,
+                (
+                    fit_inside_window,
+                    fit_inside_matrix,
+                    fit_inside_row,
+                    fit_inside_cell,
+                    fit_to_transform,
+                    show_fit,
+                )
+                    .chain(),
                 // (
                 //     cell_start_drag,
                 //     cell_continue_drag,
@@ -115,7 +122,61 @@ impl Puzzle {
 }
 
 #[derive(Reflect, Debug, Component, Default)]
-struct FitWithin(Rect);
+struct FitWithin {
+    rect: Rect,
+    updating: bool,
+}
+
+impl FitWithin {
+    fn new(rect: Rect) -> Self {
+        FitWithin {
+            rect,
+            updating: true,
+        }
+    }
+
+    fn set_rect(&mut self, new_rect: Rect) {
+        if self.rect != new_rect {
+            self.updating = true;
+        }
+        self.rect = new_rect;
+    }
+}
+
+#[derive(Bundle)]
+struct FitWithinBundle {
+    fit: FitWithin,
+    transform: Transform,
+    visibility: InheritedVisibility,
+}
+
+impl FitWithinBundle {
+    fn new() -> Self {
+        FitWithinBundle {
+            fit: FitWithin::default(),
+            transform: Transform::default(),
+            visibility: InheritedVisibility::VISIBLE,
+        }
+    }
+}
+
+#[derive(Bundle)]
+struct RandomColorSprite {
+    sprite: Sprite,
+    assign: AssignRandomColor,
+}
+
+impl RandomColorSprite {
+    fn new() -> Self {
+        RandomColorSprite {
+            sprite: Sprite::from_color(css::ALICE_BLUE, Vec2::new(1., 1.)),
+            assign: AssignRandomColor,
+        }
+    }
+}
+
+#[derive(Reflect, Debug, Component)]
+struct AssignRandomColor;
 
 #[derive(Reflect, Debug, Component)]
 struct DisplayMatrix;
@@ -200,6 +261,26 @@ fn spawn_row(
     }
 }
 
+fn assign_random_color(
+    mut commands: Commands,
+    mut rng: ResMut<SeededRng>,
+    mut q_fit: Query<(Entity, &mut Sprite), With<AssignRandomColor>>,
+) {
+    let rng = &mut rng.0;
+    let hue_dist = rand::distr::Uniform::new(0., 360.).unwrap();
+    let saturation_dist = rand::distr::Uniform::new(0.5, 0.9).unwrap();
+    let lightness_dist = rand::distr::Uniform::new(0.2, 0.6).unwrap();
+    for (entity, mut sprite) in &mut q_fit {
+        sprite.color = Color::hsla(
+            hue_dist.sample(rng),
+            saturation_dist.sample(rng),
+            lightness_dist.sample(rng),
+            0.2,
+        );
+        commands.entity(entity).remove::<AssignRandomColor>();
+    }
+}
+
 fn random_colors<R: Rng>(n_colors: usize, rng: &mut R) -> Vec<Color> {
     let n_samples = n_colors * 3;
     let saturation_dist = rand::distr::Uniform::new(0.5, 0.9).unwrap();
@@ -237,9 +318,8 @@ fn add_row(
         commands.entity(*matrix).with_children(|matrix_spawner| {
             matrix_spawner
                 .spawn((
-                    Transform::default(),
-                    InheritedVisibility::VISIBLE,
-                    FitWithin::default(),
+                    FitWithinBundle::new(),
+                    // RandomColorSprite::new(),
                     DisplayRow { row_nr },
                 ))
                 .with_children(|row_spawner| {
@@ -247,9 +327,8 @@ fn add_row(
                         let loc = CellLoc { row_nr, cell_nr };
                         row_spawner
                             .spawn((
-                                // Transform::default(),
-                                Transform::from_xyz(200. * cell_nr as f32, 0., 0.),
-                                InheritedVisibility::VISIBLE,
+                                FitWithinBundle::new(),
+                                // RandomColorSprite::new(),
                                 DisplayCell { loc },
                             ))
                             .with_children(|cell_spawner| {
@@ -260,8 +339,7 @@ fn add_row(
                                                 puzzle.rows[row_nr].colors[index],
                                                 Vec2::new(25., 25.),
                                             ),
-                                            // Transform::default(),
-                                            Transform::from_xyz(30. * index as f32, 0., 0.),
+                                            FitWithinBundle::new(),
                                             DisplayCellButton {
                                                 index: CellLocIndex { loc, index },
                                             },
@@ -292,7 +370,7 @@ fn fit_inside_window(
         return;
     };
     for mut fit_within in &mut q_fit_root {
-        *fit_within = FitWithin(logical_viewport);
+        fit_within.set_rect(logical_viewport);
     }
 }
 
@@ -310,23 +388,109 @@ fn fit_inside_matrix(
     }
     for (within, mut children) in row_map.into_values() {
         children.sort_by_key(|(row, _)| row.row_nr);
-        let fit_height = within.0.height();
+        let fit = within.rect;
+        let fit_height = fit.height();
         let row_height = fit_height / children.len() as f32;
-        let row_size = Vec2::new(within.0.width(), row_height);
-        let mut current_y = row_height / -2.;
+        let mut current_y = fit.max.y;
         for (display_row, mut fit_within) in children {
             // dbg!(display_row);
-            let row_rect = Rect::from_center_size(Vec2::new(0., current_y), row_size);
-            *fit_within = FitWithin(row_rect);
-            current_y -= row_height;
+            let new_y = current_y - row_height;
+            let row_rect =
+                Rect::from_corners(Vec2::new(fit.min.x, current_y), Vec2::new(fit.max.x, new_y));
+            fit_within.set_rect(row_rect);
+            current_y = new_y;
         }
     }
 }
 
-fn fit_to_transform(mut q_fit: Query<(&FitWithin, &mut Transform)>) {
-    for (fit, mut transform) in &mut q_fit {
-        let center = fit.0.center();
-        *transform = Transform::from_xyz(-center.x, -center.y, 0.);
+fn fit_inside_row(
+    q_parent: Query<&FitWithin, (With<DisplayRow>, Without<DisplayCell>)>,
+    mut q_child: Query<(&mut FitWithin, &Parent, &DisplayCell)>,
+) {
+    let mut cell_map = HashMap::<Entity, _>::new();
+    for (fit_within, parent, display_row) in &mut q_child {
+        let Ok(within) = q_parent.get(**parent) else {
+            unreachable!()
+        };
+        let (_, children) = cell_map.entry(**parent).or_insert_with(|| (within, vec![]));
+        children.push((display_row, fit_within));
+    }
+    for (within, mut children) in cell_map.into_values() {
+        children.sort_by_key(|(cell, _)| cell.loc);
+        let fit = within.rect;
+        let fit_width = fit.width();
+        let prospective_cell_width = fit_width / children.len() as f32;
+        let cell_spacing = prospective_cell_width * 0.15;
+        let total_cell_spacing = cell_spacing * (children.len() - 1) as f32;
+        let cell_width = (fit_width - total_cell_spacing) / children.len() as f32;
+        let mut current_x = fit.max.x;
+        for (display_cell, mut fit_within) in children {
+            let new_x = current_x - cell_width;
+            let cell_rect =
+                Rect::from_corners(Vec2::new(current_x, fit.min.y), Vec2::new(new_x, fit.max.y));
+            fit_within.set_rect(cell_rect);
+            current_x = new_x - cell_spacing;
+        }
+    }
+}
+
+fn fit_inside_cell(
+    q_parent: Query<&FitWithin, (With<DisplayCell>, Without<DisplayCellButton>)>,
+    mut q_child: Query<(&mut FitWithin, &Parent, &DisplayCellButton)>,
+) {
+    let mut cell_map = HashMap::<Entity, _>::new();
+    for (fit_within, parent, display_row) in &mut q_child {
+        let Ok(within) = q_parent.get(**parent) else {
+            unreachable!()
+        };
+        let (_, children) = cell_map.entry(**parent).or_insert_with(|| (within, vec![]));
+        children.push((display_row, fit_within));
+    }
+    for (within, mut children) in cell_map.into_values() {
+        children.sort_by_key(|(cell, _)| cell.index);
+        let fit = within.rect;
+        let fit_width = fit.width();
+        let cell_width = fit_width / children.len() as f32;
+        let mut current_x = fit.max.x;
+        for (display_cell, mut fit_within) in children {
+            let new_x = current_x - cell_width;
+            let cell_rect =
+                Rect::from_corners(Vec2::new(current_x, fit.min.y), Vec2::new(new_x, fit.max.y));
+            fit_within.set_rect(cell_rect);
+            current_x = new_x;
+        }
+    }
+}
+
+fn fit_to_transform(mut q_fit: Query<(Entity, &FitWithin, Option<&Parent>, &mut Transform)>) {
+    let updates = q_fit
+        .iter()
+        .filter_map(|(entity, fit, parent, transform)| {
+            let Ok((_, parent_fit, _, _)) = q_fit.get(**(parent?)) else {
+                return None;
+            };
+            Some((entity, parent_fit.rect.center() - fit.rect.center()))
+        })
+        .collect::<Vec<_>>();
+    for (entity, translate) in updates {
+        let Ok((_, _, _, mut transform)) = q_fit.get_mut(entity) else {
+            continue;
+        };
+        transform.translation.x = translate.x;
+        transform.translation.y = translate.y;
+    }
+}
+
+fn show_fit(mut q_fit: Query<(&mut FitWithin, &mut Sprite)>) {
+    for (mut fit, mut sprite) in &mut q_fit {
+        if fit.updating {
+            info!("updating {:?}", fit);
+            // sprite.custom_size = Some(fit.rect.size());
+            fit.updating = false;
+        }
+        // transform.translation.x = -center.x;
+        // transform.translation.y = -center.y;
+        // *transform = Transform::from_xyz(-center.x, -center.y, 0.);
     }
 }
 
@@ -512,9 +676,8 @@ fn setup(mut commands: Commands) {
 
     commands.spawn((
         DisplayMatrix,
-        FitWithin::default(),
-        Transform::default(),
-        InheritedVisibility::VISIBLE,
+        FitWithinBundle::new(),
+        // RandomColorSprite::new(),
     ));
     commands.insert_resource(SeededRng(ChaCha8Rng::from_os_rng()));
 }
