@@ -559,6 +559,7 @@ fn cell_clicked_down(
         &DisplayCellButton,
         &FitInteraction,
         &GlobalTransform,
+        &Sprite,
     )>,
     // mut writer: EventWriter<StartButtonDrag>,
     mut commands: Commands,
@@ -574,18 +575,17 @@ fn cell_clicked_down(
         return;
     };
     let window_center = logical_viewport.center();
-    for (entity, button, interaction, &transform) in &q_cell {
+    for (entity, button, interaction, &transform, sprite) in &q_cell {
         if matches!(interaction, FitInteraction::Hover) {
-            info!("starting drag {:?}", entity);
+            info!("starting drag {:?} {:?}", entity, sprite.color);
             let translate = (cursor_loc - window_center) * Vec2::new(1., -1.);
             commands
                 .spawn((
-                    Sprite::from_color(Color::WHITE, Vec2::new(10., 10.)),
-                    AssignRandomColor,
+                    Sprite::from_color(sprite.color.with_alpha(0.5), Vec2::new(100., 100.)),
                     Transform::from_xyz(translate.x, translate.y, 5.),
                     DragTarget,
                 ))
-                .with_child(Text2d::new("drag"));
+                .with_child((Text2d::new("drag"), Transform::from_xyz(0., 0., 1.)));
             // info!(
             //     "down ev={:#?} button={:#?} int={:#?} transform={:#?} local={:#?} iso={:#?}",
             //     ev,
