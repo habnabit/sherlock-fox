@@ -6,6 +6,8 @@ use bevy::{
 };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use fixedbitset::FixedBitSet;
+use rand::{distr::Distribution, seq::SliceRandom, Rng, SeedableRng};
+use rand_chacha::ChaCha8Rng;
 
 fn main() {
     App::new()
@@ -38,6 +40,9 @@ fn main() {
         .run();
 }
 
+#[derive(Resource)]
+struct SeededRng(ChaCha8Rng);
+
 #[derive(Debug, Clone, Reflect)]
 // #[reflect(from_reflect = false)]
 struct PuzzleCell {
@@ -67,14 +72,16 @@ impl PuzzleCell {
 #[derive(Debug, Clone, Reflect)]
 struct PuzzleRow {
     cells: Vec<PuzzleCell>,
+    colors: Vec<Color>,
 }
 
 impl PuzzleRow {
-    fn new(len: usize) -> Self {
+    fn new(colors: Vec<Color>) -> Self {
+        let len = colors.len();
         let mut bitset = FixedBitSet::with_capacity(len);
         bitset.insert_range(..);
         let cells = vec![PuzzleCell::new(bitset); len];
-        PuzzleRow { cells }
+        PuzzleRow { cells, colors }
     }
 
     fn len(&self) -> usize {
@@ -92,7 +99,7 @@ impl Puzzle {
     fn add_row(&mut self, row: PuzzleRow) -> Transform {
         self.rows.push(row);
         let y = self.next_y;
-        self.next_y += 250.;
+        self.next_y += 100.;
         Transform::from_xyz(0., y, 0.)
     }
 
@@ -186,15 +193,40 @@ fn spawn_row(
     }
 }
 
+fn random_colors<R: Rng>(n_colors: usize, rng: &mut R) -> Vec<Color> {
+    let n_samples = n_colors * 3;
+    let saturation_dist = rand::distr::Uniform::new(0.5, 0.9).unwrap();
+    let lightness_dist = rand::distr::Uniform::new(0.2, 0.6).unwrap();
+    let saturation = saturation_dist.sample(rng);
+    let lightness = lightness_dist.sample(rng);
+    let hue_width = 360. / n_samples as f32;
+    let hue_shift = hue_width / 2. * rand::distr::Uniform::new(0., 1.).unwrap().sample(rng);
+    let mut hues = (0..n_samples)
+        .map(|i| hue_shift + hue_width * i as f32)
+        .collect::<Vec<_>>();
+    info!(
+        "saturation={saturation} lightntess={lightness} hue_width={hue_width} \
+         hue_shift={hue_shift} hues={hues:?}"
+    );
+    hues.as_mut_slice().shuffle(rng);
+    info!("shuffled? hues={hues:?}");
+    hues.into_iter()
+        .take(n_colors)
+        .map(|hue| Color::hsl(hue, saturation, lightness))
+        .collect()
+}
+
 fn add_row(
     mut commands: Commands,
     mut reader: EventReader<AddRow>,
+    mut rng: ResMut<SeededRng>,
     mut puzzle: Single<&mut Puzzle>,
     matrix: Single<Entity, With<DisplayMatrix>>,
 ) {
     for ev in reader.read() {
         let row_nr = puzzle.rows.len();
-        let transform = puzzle.add_row(PuzzleRow::new(ev.len));
+        let colors = random_colors(ev.len, &mut rng.0);
+        let transform = puzzle.add_row(PuzzleRow::new(colors));
         commands.entity(*matrix).with_children(|matrix_spawner| {
             matrix_spawner
                 .spawn((transform, InheritedVisibility::VISIBLE))
@@ -203,7 +235,7 @@ fn add_row(
                         let loc = CellLoc { row_nr, cell_nr };
                         row_spawner
                             .spawn((
-                                Transform::from_xyz(250. * cell_nr as f32, 0., 0.),
+                                Transform::from_xyz(200. * cell_nr as f32, 0., 0.),
                                 InheritedVisibility::VISIBLE,
                                 DisplayCell { loc },
                             ))
@@ -211,14 +243,21 @@ fn add_row(
                                 for index in 0..ev.len {
                                     cell_spawner
                                         .spawn((
-                                            Text2d::new(format!("{index}")),
-                                            Transform::from_xyz(25. * index as f32, 0., 0.),
+                                            Sprite::from_color(
+                                                puzzle.rows[row_nr].colors[index],
+                                                Vec2::new(25., 25.),
+                                            ),
+                                            Transform::from_xyz(30. * index as f32, 0., 0.),
                                             DisplayCellButton {
                                                 index: CellLocIndex { loc, index },
                                             },
                                         ))
                                         .observe(cell_clicked_down)
-                                        .observe(cell_clicked_up);
+                                        .observe(cell_clicked_up)
+                                        .with_child((
+                                            Text2d::new(format!("{index}")),
+                                            Transform::from_xyz(0., 0., 1.),
+                                        ));
                                 }
                             });
                     }
@@ -410,4 +449,5 @@ fn setup(mut commands: Commands) {
         <Transform as Default>::default(),
         InheritedVisibility::VISIBLE,
     ));
+    commands.insert_resource(SeededRng(ChaCha8Rng::from_os_rng()));
 }
