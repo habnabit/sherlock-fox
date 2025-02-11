@@ -39,6 +39,7 @@ fn main() {
                     show_fit,
                 )
                     .chain(),
+                mouse_inside_window,
                 // (
                 //     cell_start_drag,
                 //     cell_continue_drag,
@@ -423,13 +424,13 @@ fn fit_inside_row(
         let cell_spacing = prospective_cell_width * 0.15;
         let total_cell_spacing = cell_spacing * (children.len() - 1) as f32;
         let cell_width = (fit_width - total_cell_spacing) / children.len() as f32;
-        let mut current_x = fit.max.x;
+        let mut current_x = fit.min.x;
         for (display_cell, mut fit_within) in children {
-            let new_x = current_x - cell_width;
+            let new_x = current_x + cell_width;
             let cell_rect =
                 Rect::from_corners(Vec2::new(current_x, fit.min.y), Vec2::new(new_x, fit.max.y));
             fit_within.set_rect(cell_rect);
-            current_x = new_x - cell_spacing;
+            current_x = new_x + cell_spacing;
         }
     }
 }
@@ -451,9 +452,9 @@ fn fit_inside_cell(
         let fit = within.rect;
         let fit_width = fit.width();
         let cell_width = fit_width / children.len() as f32;
-        let mut current_x = fit.max.x;
+        let mut current_x = fit.min.x;
         for (display_cell, mut fit_within) in children {
-            let new_x = current_x - cell_width;
+            let new_x = current_x + cell_width;
             let cell_rect =
                 Rect::from_corners(Vec2::new(current_x, fit.min.y), Vec2::new(new_x, fit.max.y));
             fit_within.set_rect(cell_rect);
@@ -469,7 +470,11 @@ fn fit_to_transform(mut q_fit: Query<(Entity, &FitWithin, Option<&Parent>, &mut 
             let Ok((_, parent_fit, _, _)) = q_fit.get(**(parent?)) else {
                 return None;
             };
-            Some((entity, parent_fit.rect.center() - fit.rect.center()))
+            Some((
+                entity,
+                // TODO: unsure why this needs to be Y-reflected
+                (fit.rect.center() - parent_fit.rect.center()) * Vec2::new(1., -1.),
+            ))
         })
         .collect::<Vec<_>>();
     for (entity, translate) in updates {
@@ -484,13 +489,34 @@ fn fit_to_transform(mut q_fit: Query<(Entity, &FitWithin, Option<&Parent>, &mut 
 fn show_fit(mut q_fit: Query<(&mut FitWithin, &mut Sprite)>) {
     for (mut fit, mut sprite) in &mut q_fit {
         if fit.updating {
-            info!("updating {:?}", fit);
+            // ("updating {:?}", fit);
             // sprite.custom_size = Some(fit.rect.size());
             fit.updating = false;
         }
         // transform.translation.x = -center.x;
         // transform.translation.y = -center.y;
         // *transform = Transform::from_xyz(-center.x, -center.y, 0.);
+    }
+}
+
+fn mouse_inside_window(
+    q_primary_window: Single<&Window, With<PrimaryWindow>>,
+    q_camera: Single<(&Camera, &GlobalTransform)>,
+    mut q_fit_root: Query<(&FitWithin, &mut Transform), With<DisplayCellButton>>,
+    // parent: Query<()>,
+    // mut child: Query<()>,
+) {
+    let Some(cursor) = q_primary_window.cursor_position() else {
+        return;
+    };
+    for (fit_within, mut transform) in &mut q_fit_root {
+        let scale = if fit_within.rect.contains(cursor) {
+            1.25
+        } else {
+            1.0
+        };
+        transform.scale.x = scale;
+        transform.scale.y = scale;
     }
 }
 
