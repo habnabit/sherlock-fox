@@ -215,7 +215,7 @@ struct DisplayCell {
     loc: CellLoc,
 }
 
-#[derive(Reflect, Debug, Component)]
+#[derive(Reflect, Debug, Component, Clone)]
 struct DisplayCellButton {
     index: CellLocIndex,
 }
@@ -246,8 +246,14 @@ struct StartButtonDrag {
     entity: Entity,
 }
 
-#[derive(Reflect, Debug, Component)]
-struct DragTarget;
+#[derive(Reflect, Debug, Component, Default)]
+struct DragUI;
+
+#[derive(Reflect, Debug, Component, Default)]
+struct DragTarget {
+    start: Vec2,
+    latest: Vec2,
+}
 
 #[derive(Debug, Clone, Copy)]
 enum UpdateCellIndexOperation {
@@ -302,12 +308,12 @@ fn random_colors<R: Rng>(n_colors: usize, rng: &mut R) -> Vec<Color> {
     let mut hues = (0..n_samples)
         .map(|i| hue_shift + hue_width * i as f32)
         .collect::<Vec<_>>();
-    info!(
-        "saturation={saturation} lightntess={lightness} hue_width={hue_width} \
-         hue_shift={hue_shift} hues={hues:?}"
-    );
+    // info!(
+    //     "saturation={saturation} lightntess={lightness} hue_width={hue_width} \
+    //      hue_shift={hue_shift} hues={hues:?}"
+    // );
     hues.as_mut_slice().shuffle(rng);
-    info!("shuffled? hues={hues:?}");
+    // info!("shuffled? hues={hues:?}");
     hues.into_iter()
         .take(n_colors)
         .map(|hue| Color::hsl(hue, saturation, lightness))
@@ -384,7 +390,7 @@ fn fit_inside_window(
         return;
     };
     for mut fit_within in &mut q_fit_root {
-        fit_within.set_rect(logical_viewport);
+        fit_within.set_rect(logical_viewport.inflate(-50.));
     }
 }
 
@@ -577,15 +583,34 @@ fn cell_clicked_down(
     let window_center = logical_viewport.center();
     for (entity, button, interaction, &transform, sprite) in &q_cell {
         if matches!(interaction, FitInteraction::Hover) {
-            info!("starting drag {:?} {:?}", entity, sprite.color);
+            // info!("starting drag {:?} {:?}", entity, sprite.color);
             let translate = (cursor_loc - window_center) * Vec2::new(1., -1.);
             commands
                 .spawn((
                     Sprite::from_color(sprite.color.with_alpha(0.5), Vec2::new(100., 100.)),
-                    Transform::from_xyz(translate.x, translate.y, 5.),
-                    DragTarget,
+                    Transform::from_xyz(translate.x, translate.y, 15.),
+                    DragTarget {
+                        start: cursor_loc,
+                        latest: cursor_loc,
+                    },
+                    button.clone(),
                 ))
                 .with_child((Text2d::new("drag"), Transform::from_xyz(0., 0., 1.)));
+            let mut transform = transform.compute_transform();
+            transform.translation.z += 10.;
+            commands
+                .spawn((
+                    Sprite::from_color(Color::hsla(0., 0., 0.5, 0.8), Vec2::new(200., 200.)),
+                    transform,
+                    DragUI,
+                ))
+                .with_children(|actions_spawner| {
+                    actions_spawner.spawn((Text2d::new("Clear"), Transform::from_xyz(50., 0., 1.)));
+                    actions_spawner.spawn((Text2d::new("Set"), Transform::from_xyz(0., -50., 1.)));
+                    actions_spawner
+                        .spawn((Text2d::new("Toggle"), Transform::from_xyz(-50., 0., 1.)));
+                    actions_spawner.spawn((Text2d::new("Solo"), Transform::from_xyz(0., 50., 1.)));
+                });
             // info!(
             //     "down ev={:#?} button={:#?} int={:#?} transform={:#?} local={:#?} iso={:#?}",
             //     ev,
@@ -615,7 +640,7 @@ fn cell_start_drag(
 fn cell_continue_drag(
     q_camera: Single<(&Camera, &GlobalTransform)>,
     q_window: Query<&Window, With<PrimaryWindow>>,
-    mut q_transform: Query<&mut Transform, With<DragTarget>>,
+    mut q_transform: Query<(&mut Transform, &mut DragTarget)>,
 ) {
     let (camera, camera_transform) = *q_camera;
     let Some(logical_viewport) = camera.logical_viewport_rect() else {
@@ -628,15 +653,42 @@ fn cell_continue_drag(
         return;
     };
     let window_center = logical_viewport.center();
-    for mut transform in &mut q_transform {
+    for (mut transform, mut drag_target) in &mut q_transform {
         let translate = (cursor_loc - window_center) * Vec2::new(1., -1.);
         transform.translation.x = translate.x;
         transform.translation.y = translate.y;
+        drag_target.latest = cursor_loc;
     }
 }
 
-fn cell_release_drag(mut commands: Commands, mut cell: Query<Entity, With<DragTarget>>) {
-    for entity in &cell {
+fn cell_release_drag(
+    mut commands: Commands,
+    q_cell: Query<(Entity, &DisplayCellButton, &DragTarget)>,
+    q_dragui: Query<Entity, With<DragUI>>,
+    mut writer: EventWriter<UpdateCellIndex>,
+) {
+    for (entity, &DisplayCellButton { index }, drag_target) in &q_cell {
+        let distance = drag_target.start.distance(drag_target.latest);
+        let angle = (drag_target.start - drag_target.latest).to_angle() + std::f32::consts::PI;
+        let sectors = 4;
+        let frac_adjust = 1. / sectors as f32 / 2.;
+        let pre_angle_frac = angle / std::f32::consts::TAU;
+        let angle_frac = (pre_angle_frac + frac_adjust) % 1.;
+        let sector = (angle_frac * sectors as f32).floor();
+        // info!("drag release distance={distance} sector={sector}");
+        if distance > 5. {
+            let op = match sector as u8 {
+                0 => UpdateCellIndexOperation::Clear,
+                1 => UpdateCellIndexOperation::Set,
+                2 => UpdateCellIndexOperation::Toggle,
+                3 => UpdateCellIndexOperation::Solo,
+                _ => unreachable!(),
+            };
+            writer.send(UpdateCellIndex { index, op });
+        }
+        commands.entity(entity).despawn_recursive();
+    }
+    for entity in &q_dragui {
         commands.entity(entity).despawn_recursive();
     }
 }
@@ -674,7 +726,7 @@ fn cell_update(
         let puzzle_cell = puzzle.cell_mut(index.loc);
         puzzle_cell.apply(index.index, op);
         // info!(
-        //     "updating: index={index:?} entity={entity:?} state={:x?}",
+        //     "updating: index={index:?} op={op:?} entity={entity:?} state={:x?}",
         //     puzzle_cell.enabled.as_slice()
         // );
         writer.send(UpdateCellDisplay { loc: index.loc });
@@ -683,34 +735,31 @@ fn cell_update(
 
 fn cell_update_display(
     puzzle: Single<&Puzzle>,
-    mut cell_index_query: Query<(Entity, &DisplayCellButton, &mut BorderColor)>,
+    mut cell_index_query: Query<(&DisplayCellButton, &mut Sprite)>,
     mut reader: EventReader<UpdateCellDisplay>,
 ) {
-    let mut entity_map = {
-        let mut map = HashMap::new();
-        for (entity, &DisplayCellButton { index }, border_color) in &mut cell_index_query {
-            let v = map.entry(index.loc).or_insert_with(|| {
-                let n_cells = puzzle.rows[index.loc.row_nr].len();
-                (0..n_cells).map(|_| None).collect::<Vec<_>>()
-            });
-            v[index.index] = Some(border_color);
-        }
-        map
-    };
+    let mut entity_map = HashMap::<_, Vec<_>>::new();
+    for (&DisplayCellButton { index }, sprite) in &mut cell_index_query {
+        entity_map
+            .entry(index.loc)
+            .or_default()
+            .push((index, sprite));
+    }
     for &UpdateCellDisplay { loc } in reader.read() {
         let cell = puzzle.cell(loc);
         let Some(buttons) = entity_map.get_mut(&loc) else {
             unreachable!()
         };
-        for (e, button) in buttons.iter_mut().enumerate() {
-            let Some(ref mut border_color) = button else {
-                unreachable!()
-            };
-            if cell.enabled.contains(e) {
-                **border_color = BorderColor(css::YELLOW_GREEN.into());
+        // info!("updating cell={cell:?}");
+        buttons.sort_by_key(|(index, _)| *index);
+        for (index, sprite) in buttons.iter_mut() {
+            let alpha = if cell.enabled.contains(index.index) {
+                1.
             } else {
-                **border_color = BorderColor(css::ORANGE_RED.into());
-            }
+                0.2
+            };
+            // info!("  sprite @{index:?} = a{alpha}");
+            sprite.color.set_alpha(alpha);
         }
     }
 }
