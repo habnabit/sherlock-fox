@@ -24,12 +24,12 @@ fn main() {
         .add_systems(
             Update,
             (
-                (
-                    cell_start_drag,
-                    cell_continue_drag,
-                    cell_release_drag.run_if(input_just_released(MouseButton::Left)),
-                )
-                    .chain(),
+                // (
+                //     cell_start_drag,
+                //     cell_continue_drag,
+                //     cell_release_drag.run_if(input_just_released(MouseButton::Left)),
+                // )
+                //     .chain(),
                 (interact_cell, cell_update, cell_update_display).chain(),
                 (spawn_row, add_row).chain(),
             ),
@@ -85,11 +85,15 @@ impl PuzzleRow {
 #[derive(Debug, Component, Default, Reflect)]
 struct Puzzle {
     rows: Vec<PuzzleRow>,
+    next_y: f32,
 }
 
 impl Puzzle {
-    fn add_row(&mut self, row: PuzzleRow) {
+    fn add_row(&mut self, row: PuzzleRow) -> Transform {
         self.rows.push(row);
+        let y = self.next_y;
+        self.next_y += 250.;
+        Transform::from_xyz(0., y, 0.)
     }
 
     fn cell(&self, loc: CellLoc) -> &PuzzleCell {
@@ -186,74 +190,40 @@ fn add_row(
     mut commands: Commands,
     mut reader: EventReader<AddRow>,
     mut puzzle: Single<&mut Puzzle>,
-    mut matrix: Single<(Entity, &mut Node), With<DisplayMatrix>>,
+    matrix: Single<Entity, With<DisplayMatrix>>,
 ) {
-    let (matrix, ref mut matrix_node) = *matrix;
-    let mut readjust_rows = false;
     for ev in reader.read() {
-        readjust_rows = true;
         let row_nr = puzzle.rows.len();
-        puzzle.add_row(PuzzleRow::new(ev.len));
-        commands.entity(matrix).with_children(|matrix_spawner| {
+        let transform = puzzle.add_row(PuzzleRow::new(ev.len));
+        commands.entity(*matrix).with_children(|matrix_spawner| {
             matrix_spawner
-                .spawn((
-                    Node {
-                        display: Display::Grid,
-                        grid_template_columns: RepeatedGridTrack::flex(ev.len as u16, 1.0),
-                        padding: UiRect::all(Val::Px(5.)),
-                        margin: UiRect::all(Val::Px(5.)),
-                        border: UiRect::all(Val::Px(1.)),
-                        ..Default::default()
-                    },
-                    BorderColor(css::REBECCA_PURPLE.into()),
-                ))
+                .spawn((transform, InheritedVisibility::VISIBLE))
                 .with_children(|row_spawner| {
                     for cell_nr in 0..ev.len {
                         let loc = CellLoc { row_nr, cell_nr };
                         row_spawner
                             .spawn((
-                                Node {
-                                    display: Display::Flex,
-                                    align_items: AlignItems::Center,
-                                    justify_content: JustifyContent::SpaceEvenly,
-                                    padding: UiRect::all(Val::Px(5.)),
-                                    margin: UiRect::all(Val::Px(5.)),
-                                    border: UiRect::all(Val::Px(1.)),
-                                    ..Default::default()
-                                },
-                                BorderColor(css::STEEL_BLUE.into()),
+                                Transform::from_xyz(250. * cell_nr as f32, 0., 0.),
+                                InheritedVisibility::VISIBLE,
                                 DisplayCell { loc },
                             ))
                             .with_children(|cell_spawner| {
                                 for index in 0..ev.len {
                                     cell_spawner
                                         .spawn((
-                                            Node {
-                                                padding: UiRect::all(Val::Px(5.)),
-                                                margin: UiRect::all(Val::Px(5.)),
-                                                border: UiRect::all(Val::Px(1.)),
-                                                width: Val::Percent(100.),
-                                                ..Default::default()
-                                            },
-                                            BorderColor(css::YELLOW_GREEN.into()),
-                                            BackgroundColor(css::DARK_SLATE_GRAY.into()),
-                                            Button,
+                                            Text2d::new(format!("{index}")),
+                                            Transform::from_xyz(25. * index as f32, 0., 0.),
                                             DisplayCellButton {
                                                 index: CellLocIndex { loc, index },
                                             },
                                         ))
                                         .observe(cell_clicked_down)
-                                        .observe(cell_clicked_up)
-                                        .with_child(Text::new(format!("{index}")));
+                                        .observe(cell_clicked_up);
                                 }
                             });
                     }
                 });
         });
-    }
-
-    if readjust_rows {
-        matrix_node.grid_template_rows = RepeatedGridTrack::flex(puzzle.rows.len() as u16, 1.0);
     }
 }
 
@@ -435,23 +405,9 @@ fn setup(mut commands: Commands) {
         timer: Timer::new(Duration::from_secs_f32(0.1), TimerMode::Repeating),
     });
 
-    commands
-        .spawn((
-            Node {
-                display: Display::Grid,
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                ..Default::default()
-            },
-            NodeRoot,
-        ))
-        .with_children(|root| {
-            root.spawn((
-                Node {
-                    display: Display::Grid,
-                    ..Default::default()
-                },
-                DisplayMatrix,
-            ));
-        });
+    commands.spawn((
+        DisplayMatrix,
+        <Transform as Default>::default(),
+        InheritedVisibility::VISIBLE,
+    ));
 }
