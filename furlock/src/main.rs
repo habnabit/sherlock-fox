@@ -34,7 +34,7 @@ fn main() {
             (
                 assign_random_color,
                 (
-                    fit_inside_window,
+                    fit_inside_window.run_if(any_with_component::<PrimaryWindow>),
                     fit_inside_matrix,
                     fit_inside_row,
                     fit_inside_cell,
