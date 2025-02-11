@@ -98,15 +98,11 @@ impl PuzzleRow {
 #[derive(Debug, Component, Default, Reflect)]
 struct Puzzle {
     rows: Vec<PuzzleRow>,
-    next_y: f32,
 }
 
 impl Puzzle {
-    fn add_row(&mut self, row: PuzzleRow) -> Transform {
+    fn add_row(&mut self, row: PuzzleRow) {
         self.rows.push(row);
-        let y = self.next_y;
-        self.next_y += 100.;
-        Transform::from_xyz(0., y, 0.)
     }
 
     fn cell(&self, loc: CellLoc) -> &PuzzleCell {
@@ -237,7 +233,7 @@ fn add_row(
     for ev in reader.read() {
         let row_nr = puzzle.rows.len();
         let colors = random_colors(ev.len, &mut rng.0);
-        let transform = puzzle.add_row(PuzzleRow::new(colors));
+        puzzle.add_row(PuzzleRow::new(colors));
         commands.entity(*matrix).with_children(|matrix_spawner| {
             matrix_spawner
                 .spawn((
