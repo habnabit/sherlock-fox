@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use bevy::{color::palettes::css, input::common_conditions::input_just_released, prelude::*, utils::hashbrown::HashMap, window::PrimaryWindow};
+use bevy::{
+    color::palettes::css, input::common_conditions::input_just_released, prelude::*,
+    utils::hashbrown::HashMap, window::PrimaryWindow,
+};
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use fixedbitset::FixedBitSet;
 
@@ -21,7 +24,12 @@ fn main() {
         .add_systems(
             Update,
             (
-                (cell_start_drag, cell_continue_drag, cell_release_drag.run_if(input_just_released(MouseButton::Left))).chain(),
+                (
+                    cell_start_drag,
+                    cell_continue_drag,
+                    cell_release_drag.run_if(input_just_released(MouseButton::Left)),
+                )
+                    .chain(),
                 (interact_cell, cell_update, cell_update_display).chain(),
                 (spawn_row, add_row).chain(),
             ),
@@ -278,9 +286,21 @@ fn cell_clicked_down(
 ) {
     for (entity, button, interaction, &transform) in &cell_query {
         if matches!(interaction, Interaction::Hovered) {
-            info!("down ev={:#?} button={:#?} int={:#?} transform={:#?} local={:#?} iso={:#?}", ev, button, interaction, transform, transform.compute_transform(), transform.to_isometry());
+            info!(
+                "down ev={:#?} button={:#?} int={:#?} transform={:#?} local={:#?} iso={:#?}",
+                ev,
+                button,
+                interaction,
+                transform,
+                transform.compute_transform(),
+                transform.to_isometry()
+            );
             let loc = &ev.event().pointer_location;
-            writer.send(dbg!(StartCellDrag { entity, x: loc.position.x, y: loc.position.y }));
+            writer.send(dbg!(StartCellDrag {
+                entity,
+                x: loc.position.x,
+                y: loc.position.y
+            }));
         }
     }
 }
@@ -314,7 +334,13 @@ fn cell_continue_drag(
 ) {
     // let (main_camera, main_camera_transform) = *q_camera;
     // Get the cursor position in the world
-    let Some(loc) = primary_window.iter().next().and_then(|w| w.cursor_position()) else { return };
+    let Some(loc) = primary_window
+        .iter()
+        .next()
+        .and_then(|w| w.cursor_position())
+    else {
+        return;
+    };
     // dbg!(loc);
     for mut node in &mut cell {
         node.left = Val::Px(loc.x);
@@ -322,10 +348,7 @@ fn cell_continue_drag(
     }
 }
 
-fn cell_release_drag(
-    mut commands: Commands,
-    mut cell: Query<Entity, With<DragTarget>>,
-) {
+fn cell_release_drag(mut commands: Commands, mut cell: Query<Entity, With<DragTarget>>) {
     for entity in &cell {
         commands.entity(entity).despawn_recursive();
     }
@@ -338,16 +361,13 @@ fn cell_clicked_up(
     mut writer: EventWriter<UpdateCellIndex>,
 ) {
     // info!("click ev={ev:?}");
-    for (
-        &DisplayCellButton {
-            index,
-        },
-        interaction,
-    ) in &cell_query
-    {
+    for (&DisplayCellButton { index }, interaction) in &cell_query {
         // info!("cell={cell:?} int={interaction:?}");
         if matches!(interaction, Interaction::Pressed) {
-            writer.send(UpdateCellIndex { index, op: UpdateCellIndexOperation::Toggle });
+            writer.send(UpdateCellIndex {
+                index,
+                op: UpdateCellIndexOperation::Toggle,
+            });
         }
     }
 }
@@ -392,9 +412,13 @@ fn cell_update_display(
     };
     for &UpdateCellDisplay { loc } in reader.read() {
         let cell = puzzle.cell(loc);
-        let Some(buttons) = entity_map.get_mut(&loc) else { unreachable!() };
+        let Some(buttons) = entity_map.get_mut(&loc) else {
+            unreachable!()
+        };
         for (e, button) in buttons.iter_mut().enumerate() {
-            let Some(ref mut border_color) = button else { unreachable!() };
+            let Some(ref mut border_color) = button else {
+                unreachable!()
+            };
             if cell.enabled.contains(e) {
                 **border_color = BorderColor(css::YELLOW_GREEN.into());
             } else {
@@ -412,12 +436,15 @@ fn setup(mut commands: Commands) {
     });
 
     commands
-        .spawn((Node {
-            display: Display::Grid,
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            ..Default::default()
-        },NodeRoot))
+        .spawn((
+            Node {
+                display: Display::Grid,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                ..Default::default()
+            },
+            NodeRoot,
+        ))
         .with_children(|root| {
             root.spawn((
                 Node {
