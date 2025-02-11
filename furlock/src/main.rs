@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use bevy::{color::palettes::css, prelude::*, utils::hashbrown::HashMap, window::PrimaryWindow};
+use bevy::{
+    color::palettes::css, input::common_conditions::input_just_released, prelude::*,
+    utils::hashbrown::HashMap, window::PrimaryWindow,
+};
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use fixedbitset::FixedBitSet;
 use rand::{distr::Distribution, seq::SliceRandom, Rng, SeedableRng};
@@ -39,13 +42,13 @@ fn main() {
                     show_fit,
                 )
                     .chain(),
-                mouse_inside_window,
-                // (
-                //     cell_start_drag,
-                //     cell_continue_drag,
-                //     cell_release_drag.run_if(input_just_released(MouseButton::Left)),
-                // )
-                //     .chain(),
+                (mouse_inside_window, interact_cell).chain(),
+                (
+                    cell_start_drag,
+                    cell_continue_drag,
+                    cell_release_drag.run_if(input_just_released(MouseButton::Left)),
+                )
+                    .chain(),
                 (interact_cell, cell_update, cell_update_display).chain(),
                 (spawn_row, add_row).chain(),
             ),
@@ -144,9 +147,16 @@ impl FitWithin {
     }
 }
 
+#[derive(Reflect, Debug, Component)]
+enum FitInteraction {
+    None,
+    Hover,
+}
+
 #[derive(Bundle)]
 struct FitWithinBundle {
     fit: FitWithin,
+    interaction: FitInteraction,
     transform: Transform,
     visibility: InheritedVisibility,
 }
@@ -155,6 +165,7 @@ impl FitWithinBundle {
     fn new() -> Self {
         FitWithinBundle {
             fit: FitWithin::default(),
+            interaction: FitInteraction::None,
             transform: Transform::default(),
             visibility: InheritedVisibility::VISIBLE,
         }
@@ -233,8 +244,6 @@ struct UpdateCellDisplay {
 #[derive(Event, Debug)]
 struct StartButtonDrag {
     entity: Entity,
-    x: f32,
-    y: f32,
 }
 
 #[derive(Reflect, Debug, Component)]
@@ -312,6 +321,7 @@ fn add_row(
     mut puzzle: Single<&mut Puzzle>,
     matrix: Single<Entity, With<DisplayMatrix>>,
 ) {
+    // let mut observer = Observer::new(cell_clicked_down);
     for ev in reader.read() {
         let row_nr = puzzle.rows.len();
         let colors = random_colors(ev.len, &mut rng.0);
@@ -334,7 +344,7 @@ fn add_row(
                             ))
                             .with_children(|cell_spawner| {
                                 for index in 0..ev.len {
-                                    cell_spawner
+                                    let cell = cell_spawner
                                         .spawn((
                                             Sprite::from_color(
                                                 puzzle.rows[row_nr].colors[index],
@@ -346,17 +356,20 @@ fn add_row(
                                             },
                                         ))
                                         .observe(cell_clicked_down)
-                                        .observe(cell_clicked_up)
+                                        // .observe(cell_clicked_up)
                                         .with_child((
                                             Text2d::new(format!("{index}")),
                                             Transform::from_xyz(0., 0., 1.),
-                                        ));
+                                        ))
+                                        .id();
+                                    // observer.watch_entity(cell);
                                 }
                             });
                     }
                 });
         });
     }
+    // commands.spawn(observer);
 }
 
 fn fit_inside_window(
@@ -502,70 +515,89 @@ fn show_fit(mut q_fit: Query<(&mut FitWithin, &mut Sprite)>) {
 fn mouse_inside_window(
     q_primary_window: Single<&Window, With<PrimaryWindow>>,
     q_camera: Single<(&Camera, &GlobalTransform)>,
-    mut q_fit_root: Query<(&FitWithin, &mut Transform), With<DisplayCellButton>>,
+    mut q_fit_root: Query<(&FitWithin, &mut FitInteraction)>,
     // parent: Query<()>,
     // mut child: Query<()>,
 ) {
     let Some(cursor) = q_primary_window.cursor_position() else {
+        for (_, mut interaction) in &mut q_fit_root {
+            *interaction = FitInteraction::None;
+        }
         return;
     };
-    for (fit_within, mut transform) in &mut q_fit_root {
-        let scale = if fit_within.rect.contains(cursor) {
-            1.25
+    for (fit_within, mut interaction) in &mut q_fit_root {
+        *interaction = if fit_within.rect.contains(cursor) {
+            FitInteraction::Hover
         } else {
-            1.0
+            FitInteraction::None
+        };
+    }
+}
+
+fn interact_cell(
+    mut interaction_query: Query<
+        (&FitInteraction, &mut Transform),
+        (Changed<FitInteraction>, With<DisplayCellButton>),
+    >,
+) {
+    for (interaction, mut transform) in &mut interaction_query {
+        let scale = match *interaction {
+            FitInteraction::Hover => 1.25,
+            FitInteraction::None => 1.,
         };
         transform.scale.x = scale;
         transform.scale.y = scale;
     }
 }
 
-fn interact_cell(
-    mut interaction_query: Query<
-        (&Interaction, &mut BackgroundColor),
-        (Changed<Interaction>, With<Button>, With<DisplayCellButton>),
-    >,
-) {
-    for (interaction, mut color) in &mut interaction_query {
-        match *interaction {
-            Interaction::Pressed => {
-                *color = BackgroundColor(css::HOT_PINK.into());
-            }
-            Interaction::Hovered => {
-                *color = BackgroundColor(css::DEEP_PINK.into());
-            }
-            Interaction::None => {
-                *color = BackgroundColor(css::DARK_SLATE_GRAY.into());
-            }
-        }
-    }
-}
-
 fn cell_clicked_down(
-    // mut commands: Commands,
     ev: Trigger<Pointer<Down>>,
-    cell_query: Query<(Entity, &DisplayCellButton, &GlobalTransform)>,
-    mut writer: EventWriter<StartButtonDrag>,
+    q_camera: Single<(&Camera, &GlobalTransform)>,
+    q_window: Query<&Window, With<PrimaryWindow>>,
+    q_cell: Query<(
+        Entity,
+        &DisplayCellButton,
+        &FitInteraction,
+        &GlobalTransform,
+    )>,
+    // mut writer: EventWriter<StartButtonDrag>,
+    mut commands: Commands,
 ) {
-    for (entity, button, &transform) in &cell_query {
-        // if matches!(interaction, Interaction::Hovered) {
-        if true {
-            info!(
-                "down ev={:#?} button={:#?} int={:#?} transform={:#?} local={:#?} iso={:#?}",
-                ev,
-                button,
-                (),
-                // interaction,
-                transform,
-                transform.compute_transform(),
-                transform.to_isometry()
-            );
-            let loc = &ev.event().pointer_location;
-            writer.send(dbg!(StartButtonDrag {
-                entity,
-                x: loc.position.x,
-                y: loc.position.y
-            }));
+    let (camera, camera_transform) = *q_camera;
+    let Some(logical_viewport) = camera.logical_viewport_rect() else {
+        return;
+    };
+    let Some(window) = q_window.iter().next() else {
+        return;
+    };
+    let Some(cursor_loc) = window.cursor_position() else {
+        return;
+    };
+    let window_center = logical_viewport.center();
+    for (entity, button, interaction, &transform) in &q_cell {
+        if matches!(interaction, FitInteraction::Hover) {
+            info!("starting drag {:?}", entity);
+            let translate = (cursor_loc - window_center) * Vec2::new(1., -1.);
+            commands
+                .spawn((
+                    Sprite::from_color(Color::WHITE, Vec2::new(10., 10.)),
+                    AssignRandomColor,
+                    Transform::from_xyz(translate.x, translate.y, 5.),
+                    DragTarget,
+                ))
+                .with_child(Text2d::new("drag"));
+            // info!(
+            //     "down ev={:#?} button={:#?} int={:#?} transform={:#?} local={:#?} iso={:#?}",
+            //     ev,
+            //     button,
+            //     (),
+            //     // interaction,
+            //     transform,
+            //     transform.compute_transform(),
+            //     transform.to_isometry()
+            // );
+            // let loc = &ev.event().pointer_location;
+            // writer.send(dbg!(StartButtonDrag { entity }));
         }
     }
 }
@@ -574,42 +606,32 @@ fn cell_start_drag(
     mut commands: Commands,
     mut cell_index_query: Query<&DisplayCellButton>,
     mut reader: EventReader<StartButtonDrag>,
-    root: Single<Entity>,
 ) {
-    for &StartButtonDrag { entity, x, y } in reader.read() {
-        commands.entity(*root).with_child((
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(x),
-                top: Val::Px(y),
-                ..Default::default()
-            },
-            Text::new("drag"),
-            DragTarget,
-        ));
-        // let () = cell_index_query.get(entity);
-    }
+    // for &StartButtonDrag { entity } in reader.read() {
+    //     // let () = cell_index_query.get(entity);
+    // }
 }
 
 fn cell_continue_drag(
-    mut cell: Query<&mut Node, With<DragTarget>>,
-    // mut cursor_world_pos: ResMut<CursorWorldPos>,
-    primary_window: Query<&Window, With<PrimaryWindow>>,
     q_camera: Single<(&Camera, &GlobalTransform)>,
+    q_window: Query<&Window, With<PrimaryWindow>>,
+    mut q_transform: Query<&mut Transform, With<DragTarget>>,
 ) {
-    // let (main_camera, main_camera_transform) = *q_camera;
-    // Get the cursor position in the world
-    let Some(loc) = primary_window
-        .iter()
-        .next()
-        .and_then(|w| w.cursor_position())
-    else {
+    let (camera, camera_transform) = *q_camera;
+    let Some(logical_viewport) = camera.logical_viewport_rect() else {
         return;
     };
-    // dbg!(loc);
-    for mut node in &mut cell {
-        node.left = Val::Px(loc.x);
-        node.top = Val::Px(loc.y);
+    let Some(window) = q_window.iter().next() else {
+        return;
+    };
+    let Some(cursor_loc) = window.cursor_position() else {
+        return;
+    };
+    let window_center = logical_viewport.center();
+    for mut transform in &mut q_transform {
+        let translate = (cursor_loc - window_center) * Vec2::new(1., -1.);
+        transform.translation.x = translate.x;
+        transform.translation.y = translate.y;
     }
 }
 
