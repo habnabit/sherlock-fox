@@ -17,7 +17,7 @@ fn main() {
     App::new()
         .init_resource::<SeededRng>()
         .add_plugins(DefaultPlugins)
-        // .add_plugins(WorldInspectorPlugin::new())
+        .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddRow>()
         .add_event::<UpdateCellDisplay>()
         .add_event::<UpdateCellIndex>()
@@ -28,11 +28,18 @@ fn main() {
         .register_type::<DisplayCellButton>()
         .register_type::<DisplayMatrix>()
         .register_type::<DisplayRow>()
+        .register_type::<FitHover>()
         .register_type::<FitWithin>()
         .register_type::<Puzzle>()
         .register_type::<PuzzleCell>()
         .register_type::<PuzzleRow>()
         .register_type::<SeededRng>()
+        .add_observer(cell_clicked_down)
+        .add_observer(interact_cell_out)
+        .add_observer(interact_cell_over)
+        .add_observer(interact_drag_ui_move)
+        .add_observer(mouse_out_fit)
+        .add_observer(mouse_over_fit)
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -46,17 +53,17 @@ fn main() {
                     fit_to_transform,
                 )
                     .chain(),
-                (
-                    mouse_inside_window.run_if(any_with_component::<PrimaryWindow>),
-                    interact_cell,
-                )
-                    .chain(),
+                // (
+                //     mouse_inside_window.run_if(any_with_component::<PrimaryWindow>),
+                //     interact_cell,
+                // )
+                //     .chain(),
                 (
                     cell_continue_drag,
                     cell_release_drag.run_if(input_just_released(MouseButton::Left)),
                 )
                     .chain(),
-                (interact_cell, cell_update, cell_update_display).chain(),
+                (cell_update, cell_update_display).chain(),
                 (spawn_row, add_row).chain(),
             ),
         )
@@ -160,15 +167,11 @@ impl FitWithin {
 }
 
 #[derive(Reflect, Debug, Component)]
-enum FitInteraction {
-    None,
-    Hover,
-}
+struct FitHover;
 
 #[derive(Bundle)]
 struct FitWithinBundle {
     fit: FitWithin,
-    interaction: FitInteraction,
     transform: Transform,
     visibility: InheritedVisibility,
 }
@@ -177,7 +180,6 @@ impl FitWithinBundle {
     fn new() -> Self {
         FitWithinBundle {
             fit: FitWithin::default(),
-            interaction: FitInteraction::None,
             transform: Transform::default(),
             visibility: InheritedVisibility::VISIBLE,
         }
@@ -276,7 +278,7 @@ impl DragTarget {
     }
 }
 
-#[derive(Reflect, Debug, Clone, Copy)]
+#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq)]
 enum UpdateCellIndexOperation {
     Clear,
     Set,
@@ -348,7 +350,6 @@ fn add_row(
     mut puzzle: Single<&mut Puzzle>,
     matrix: Single<Entity, With<DisplayMatrix>>,
 ) {
-    // let mut observer = Observer::new(cell_clicked_down);
     for ev in reader.read() {
         let row_nr = puzzle.rows.len();
         let colors = random_colors(ev.len, &mut rng.0);
@@ -371,7 +372,7 @@ fn add_row(
                             ))
                             .with_children(|cell_spawner| {
                                 for index in 0..ev.len {
-                                    let cell = cell_spawner
+                                    cell_spawner
                                         .spawn((
                                             Sprite::from_color(
                                                 puzzle.rows[row_nr].colors[index],
@@ -382,14 +383,10 @@ fn add_row(
                                                 index: CellLocIndex { loc, index },
                                             },
                                         ))
-                                        .observe(cell_clicked_down)
-                                        // .observe(cell_clicked_up)
                                         .with_child((
                                             Text2d::new(format!("{index}")),
                                             Transform::from_xyz(0., 0., 1.),
-                                        ))
-                                        .id();
-                                    // observer.watch_entity(cell);
+                                        ));
                                 }
                             });
                     }
@@ -517,38 +514,59 @@ fn fit_to_transform(mut q_fit: Query<(Entity, &FitWithin, Option<&Parent>, &mut 
     }
 }
 
-fn mouse_inside_window(
-    q_primary_window: Single<&Window, With<PrimaryWindow>>,
-    q_camera: Single<(&Camera, &GlobalTransform)>,
-    mut q_fit_root: Query<(&FitWithin, &mut FitInteraction)>,
-    // parent: Query<()>,
-    // mut child: Query<()>,
-) {
-    let Some(cursor) = q_primary_window.cursor_position() else {
-        for (_, mut interaction) in &mut q_fit_root {
-            *interaction = FitInteraction::None;
-        }
+fn mouse_over_fit(ev: Trigger<Pointer<Over>>, mut commands: Commands) {
+    // info!("mouse over fit {ev:?}");
+    let Some(mut cmd) = commands.get_entity(ev.target) else {
         return;
     };
-    for (fit_within, mut interaction) in &mut q_fit_root {
-        *interaction = if fit_within.rect.contains(cursor) {
-            FitInteraction::Hover
-        } else {
-            FitInteraction::None
-        };
-    }
+    cmd.insert(FitHover);
 }
 
-fn interact_cell(
-    mut q_interaction: Query<
-        (&FitInteraction, &mut Transform),
-        (Changed<FitInteraction>, With<DisplayCellButton>),
-    >,
+fn mouse_out_fit(ev: Trigger<Pointer<Out>>, mut commands: Commands) {
+    // info!("mouse out fit {ev:?}");
+    let Some(mut cmd) = commands.get_entity(ev.target) else {
+        return;
+    };
+    cmd.remove::<FitHover>();
+}
+
+fn interact_cell_over(
+    ev: Trigger<OnAdd, FitHover>,
+    mut q_transform: Query<&mut Transform, With<DisplayCellButton>>,
 ) {
-    for (interaction, mut transform) in &mut q_interaction {
-        let scale = match *interaction {
-            FitInteraction::Hover => 1.25,
-            FitInteraction::None => 1.,
+    let Ok(mut transform) = q_transform.get_mut(ev.entity()) else {
+        return;
+    };
+    const SCALE: f32 = 1.25;
+    transform.scale.x = SCALE;
+    transform.scale.y = SCALE;
+}
+
+fn interact_cell_out(
+    ev: Trigger<OnRemove, FitHover>,
+    mut q_transform: Query<&mut Transform, With<DisplayCellButton>>,
+) {
+    let Ok(mut transform) = q_transform.get_mut(ev.entity()) else {
+        return;
+    };
+    const SCALE: f32 = 1.0;
+    transform.scale.x = SCALE;
+    transform.scale.y = SCALE;
+}
+
+fn interact_drag_ui_move(
+    ev: Trigger<Pointer<Move>>,
+    q_target: Query<&DragTarget>,
+    mut q_transform: Query<(&mut Transform, &DragUITarget)>,
+) {
+    let Some(drag_target) = q_target.iter().next() else {
+        return;
+    };
+    for (mut transform, ui_target) in &mut q_transform {
+        let scale = if drag_target.op == Some(ui_target.0) {
+            1.25
+        } else {
+            1.
         };
         transform.scale.x = scale;
         transform.scale.y = scale;
@@ -556,19 +574,15 @@ fn interact_cell(
 }
 
 fn cell_clicked_down(
-    ev: Trigger<Pointer<Down>>,
+    mut ev: Trigger<Pointer<Down>>,
     q_camera: Single<(&Camera, &GlobalTransform)>,
     q_window: Query<&Window, With<PrimaryWindow>>,
-    q_cell: Query<(
-        Entity,
-        &DisplayCellButton,
-        &FitInteraction,
-        &GlobalTransform,
-        &Sprite,
-    )>,
+    q_cell: Query<(Entity, &DisplayCellButton, &GlobalTransform, &Sprite), With<FitHover>>,
+    q_ui: Query<Entity, With<DragUI>>,
     // mut writer: EventWriter<StartButtonDrag>,
     mut commands: Commands,
 ) {
+    info!("are we ??? ev={ev:?}");
     let (camera, camera_transform) = *q_camera;
     let Some(logical_viewport) = camera.logical_viewport_rect() else {
         return;
@@ -580,61 +594,57 @@ fn cell_clicked_down(
         return;
     };
     let window_center = logical_viewport.center();
-    for (entity, button, interaction, &transform, sprite) in &q_cell {
-        if matches!(interaction, FitInteraction::Hover) {
-            // info!("starting drag {:?} {:?}", entity, sprite.color);
-            let translate = (cursor_loc - window_center) * Vec2::new(1., -1.);
-            commands
-                .spawn((
-                    Sprite::from_color(sprite.color.with_alpha(0.5), Vec2::new(100., 100.)),
-                    Transform::from_xyz(translate.x, translate.y, 15.),
-                    DragTarget::new(cursor_loc),
-                    button.clone(),
-                ))
-                .with_child((Text2d::new("drag"), Transform::from_xyz(0., 0., 1.)));
-            let mut transform = transform.compute_transform();
-            transform.translation.z += 10.;
-            commands
-                .spawn((
-                    Sprite::from_color(Color::hsla(0., 0., 0.5, 0.8), Vec2::new(200., 200.)),
-                    transform,
-                    DragUI,
-                ))
-                .with_children(|actions_spawner| {
-                    actions_spawner.spawn((
-                        Text2d::new("Clear"),
-                        Transform::from_xyz(50., 0., 1.),
-                        DragUITarget(UpdateCellIndexOperation::Clear),
-                    ));
-                    actions_spawner.spawn((
-                        Text2d::new("Set"),
-                        Transform::from_xyz(0., -50., 1.),
-                        DragUITarget(UpdateCellIndexOperation::Set),
-                    ));
-                    actions_spawner.spawn((
-                        Text2d::new("Toggle"),
-                        Transform::from_xyz(-50., 0., 1.),
-                        DragUITarget(UpdateCellIndexOperation::Toggle),
-                    ));
-                    actions_spawner.spawn((
-                        Text2d::new("Solo"),
-                        Transform::from_xyz(0., 50., 1.),
-                        DragUITarget(UpdateCellIndexOperation::Solo),
-                    ));
-                });
-            // info!(
-            //     "down ev={:#?} button={:#?} int={:#?} transform={:#?} local={:#?} iso={:#?}",
-            //     ev,
-            //     button,
-            //     (),
-            //     // interaction,
-            //     transform,
-            //     transform.compute_transform(),
-            //     transform.to_isometry()
-            // );
-            // let loc = &ev.event().pointer_location;
-            // writer.send(dbg!(StartButtonDrag { entity }));
-        }
+    info!("are we ?");
+    let mut dragged = false;
+    for (entity, button, &transform, sprite) in &q_cell {
+        info!(
+            "starting drag entity={:?} button={:?} color={:?} ui={:?}",
+            entity,
+            button,
+            sprite.color,
+            q_ui.iter().count()
+        );
+        let translate = (cursor_loc - window_center) * Vec2::new(1., -1.);
+        commands.spawn((
+            Sprite::from_color(sprite.color.with_alpha(0.5), Vec2::new(100., 100.)),
+            Transform::from_xyz(translate.x, translate.y, 15.),
+            DragTarget::new(cursor_loc),
+            button.clone(),
+        ));
+        let mut transform = transform.compute_transform();
+        transform.translation.z += 10.;
+        commands
+            .spawn((
+                Sprite::from_color(Color::hsla(0., 0., 0.5, 0.8), Vec2::new(200., 200.)),
+                transform,
+                DragUI,
+            ))
+            .with_children(|actions_spawner| {
+                actions_spawner.spawn((
+                    Text2d::new("Clear"),
+                    Transform::from_xyz(50., 0., 1.),
+                    DragUITarget(UpdateCellIndexOperation::Clear),
+                ));
+                actions_spawner.spawn((
+                    Text2d::new("Set"),
+                    Transform::from_xyz(0., -50., 1.),
+                    DragUITarget(UpdateCellIndexOperation::Set),
+                ));
+                actions_spawner.spawn((
+                    Text2d::new("Toggle"),
+                    Transform::from_xyz(-50., 0., 1.),
+                    DragUITarget(UpdateCellIndexOperation::Toggle),
+                ));
+                actions_spawner.spawn((
+                    Text2d::new("Solo"),
+                    Transform::from_xyz(0., 50., 1.),
+                    DragUITarget(UpdateCellIndexOperation::Solo),
+                ));
+            });
+        dragged = true;
+    }
+    if dragged {
+        ev.propagate(false);
     }
 }
 
@@ -667,7 +677,7 @@ fn cell_continue_drag(
         let angle_frac = (pre_angle_frac + frac_adjust) % 1.;
         let sector = (angle_frac * sectors as f32).floor();
         // info!("drag release distance={distance} sector={sector}");
-        drag_target.op = if distance > 5. {
+        drag_target.op = if distance > 10. && distance < 125. {
             match sector as u8 {
                 0 => Some(UpdateCellIndexOperation::Clear),
                 1 => Some(UpdateCellIndexOperation::Set),
