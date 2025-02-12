@@ -6,6 +6,7 @@
 name = "furlock"
 version = "0.1.0"
 edition = "2021"
+license = "EUPL-1.2"
 
 [dependencies]
 bevy = { version = "0.15.2", features = ["dynamic_linking", "jpeg"] }
