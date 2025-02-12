@@ -1,3 +1,7 @@
+# © 2025 <_@habnab.it>
+#
+# SPDX-License-Identifier: EUPL-1.2
+
 [package]
 name = "furlock"
 version = "0.1.0"
