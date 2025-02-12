@@ -13,9 +13,8 @@ fn main() {
     App::new()
         .init_resource::<SeededRng>()
         .add_plugins(DefaultPlugins)
-        .add_plugins(WorldInspectorPlugin::new())
+        // .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddRow>()
-        .add_event::<StartButtonDrag>()
         .add_event::<UpdateCellDisplay>()
         .add_event::<UpdateCellIndex>()
         .register_type::<AssignRandomColor>()
@@ -41,7 +40,6 @@ fn main() {
                     fit_inside_row,
                     fit_inside_cell,
                     fit_to_transform,
-                    show_fit,
                 )
                     .chain(),
                 (
@@ -50,7 +48,6 @@ fn main() {
                 )
                     .chain(),
                 (
-                    cell_start_drag,
                     cell_continue_drag,
                     cell_release_drag.run_if(input_just_released(MouseButton::Left)),
                 )
@@ -59,7 +56,6 @@ fn main() {
                 (spawn_row, add_row).chain(),
             ),
         )
-        // .add_systems(Update, sprite_movement)
         .run();
 }
 
@@ -253,21 +249,30 @@ struct UpdateCellDisplay {
     loc: CellLoc,
 }
 
-#[derive(Event, Debug)]
-struct StartButtonDrag {
-    entity: Entity,
-}
-
 #[derive(Reflect, Debug, Component, Default)]
 struct DragUI;
+
+#[derive(Reflect, Debug, Component)]
+struct DragUITarget(UpdateCellIndexOperation);
 
 #[derive(Reflect, Debug, Component, Default)]
 struct DragTarget {
     start: Vec2,
     latest: Vec2,
+    op: Option<UpdateCellIndexOperation>,
 }
 
-#[derive(Debug, Clone, Copy)]
+impl DragTarget {
+    fn new(start: Vec2) -> Self {
+        DragTarget {
+            latest: start,
+            start,
+            op: None,
+        }
+    }
+}
+
+#[derive(Reflect, Debug, Clone, Copy)]
 enum UpdateCellIndexOperation {
     Clear,
     Set,
@@ -391,14 +396,10 @@ fn add_row(
 }
 
 fn fit_inside_window(
-    q_primary_window: Single<&Window, With<PrimaryWindow>>,
-    q_camera: Single<(&Camera, &GlobalTransform)>,
+    q_camera: Single<&Camera>,
     mut q_fit_root: Query<&mut FitWithin, Without<Parent>>,
-    // parent: Query<()>,
-    // mut child: Query<()>,
 ) {
-    let (camera, camera_transform) = *q_camera;
-    let Some(logical_viewport) = camera.logical_viewport_rect() else {
+    let Some(logical_viewport) = q_camera.logical_viewport_rect() else {
         return;
     };
     for mut fit_within in &mut q_fit_root {
@@ -424,8 +425,7 @@ fn fit_inside_matrix(
         let fit_height = fit.height();
         let row_height = fit_height / children.len() as f32;
         let mut current_y = fit.max.y;
-        for (display_row, mut fit_within) in children {
-            // dbg!(display_row);
+        for (_, mut fit_within) in children {
             let new_y = current_y - row_height;
             let row_rect =
                 Rect::from_corners(Vec2::new(fit.min.x, current_y), Vec2::new(fit.max.x, new_y));
@@ -497,15 +497,11 @@ fn fit_inside_cell(
 fn fit_to_transform(mut q_fit: Query<(Entity, &FitWithin, Option<&Parent>, &mut Transform)>) {
     let updates = q_fit
         .iter()
-        .filter_map(|(entity, fit, parent, transform)| {
-            let Ok((_, parent_fit, _, _)) = q_fit.get(**(parent?)) else {
-                return None;
-            };
-            Some((
-                entity,
-                // TODO: unsure why this needs to be Y-reflected
-                (fit.rect.center() - parent_fit.rect.center()) * Vec2::new(1., -1.),
-            ))
+        .filter_map(|(entity, fit, parent, _)| {
+            let (_, parent_fit, _, _) = q_fit.get(**(parent?)).ok()?;
+            // TODO: unsure why this needs to be Y-reflected
+            let translate = (fit.rect.center() - parent_fit.rect.center()) * Vec2::new(1., -1.);
+            Some((entity, translate))
         })
         .collect::<Vec<_>>();
     for (entity, translate) in updates {
@@ -514,19 +510,6 @@ fn fit_to_transform(mut q_fit: Query<(Entity, &FitWithin, Option<&Parent>, &mut 
         };
         transform.translation.x = translate.x;
         transform.translation.y = translate.y;
-    }
-}
-
-fn show_fit(mut q_fit: Query<(&mut FitWithin, &mut Sprite)>) {
-    for (mut fit, mut sprite) in &mut q_fit {
-        if fit.updating {
-            // ("updating {:?}", fit);
-            // sprite.custom_size = Some(fit.rect.size());
-            fit.updating = false;
-        }
-        // transform.translation.x = -center.x;
-        // transform.translation.y = -center.y;
-        // *transform = Transform::from_xyz(-center.x, -center.y, 0.);
     }
 }
 
@@ -553,12 +536,12 @@ fn mouse_inside_window(
 }
 
 fn interact_cell(
-    mut interaction_query: Query<
+    mut q_interaction: Query<
         (&FitInteraction, &mut Transform),
         (Changed<FitInteraction>, With<DisplayCellButton>),
     >,
 ) {
-    for (interaction, mut transform) in &mut interaction_query {
+    for (interaction, mut transform) in &mut q_interaction {
         let scale = match *interaction {
             FitInteraction::Hover => 1.25,
             FitInteraction::None => 1.,
@@ -601,10 +584,7 @@ fn cell_clicked_down(
                 .spawn((
                     Sprite::from_color(sprite.color.with_alpha(0.5), Vec2::new(100., 100.)),
                     Transform::from_xyz(translate.x, translate.y, 15.),
-                    DragTarget {
-                        start: cursor_loc,
-                        latest: cursor_loc,
-                    },
+                    DragTarget::new(cursor_loc),
                     button.clone(),
                 ))
                 .with_child((Text2d::new("drag"), Transform::from_xyz(0., 0., 1.)));
@@ -617,11 +597,26 @@ fn cell_clicked_down(
                     DragUI,
                 ))
                 .with_children(|actions_spawner| {
-                    actions_spawner.spawn((Text2d::new("Clear"), Transform::from_xyz(50., 0., 1.)));
-                    actions_spawner.spawn((Text2d::new("Set"), Transform::from_xyz(0., -50., 1.)));
-                    actions_spawner
-                        .spawn((Text2d::new("Toggle"), Transform::from_xyz(-50., 0., 1.)));
-                    actions_spawner.spawn((Text2d::new("Solo"), Transform::from_xyz(0., 50., 1.)));
+                    actions_spawner.spawn((
+                        Text2d::new("Clear"),
+                        Transform::from_xyz(50., 0., 1.),
+                        DragUITarget(UpdateCellIndexOperation::Clear),
+                    ));
+                    actions_spawner.spawn((
+                        Text2d::new("Set"),
+                        Transform::from_xyz(0., -50., 1.),
+                        DragUITarget(UpdateCellIndexOperation::Set),
+                    ));
+                    actions_spawner.spawn((
+                        Text2d::new("Toggle"),
+                        Transform::from_xyz(-50., 0., 1.),
+                        DragUITarget(UpdateCellIndexOperation::Toggle),
+                    ));
+                    actions_spawner.spawn((
+                        Text2d::new("Solo"),
+                        Transform::from_xyz(0., 50., 1.),
+                        DragUITarget(UpdateCellIndexOperation::Solo),
+                    ));
                 });
             // info!(
             //     "down ev={:#?} button={:#?} int={:#?} transform={:#?} local={:#?} iso={:#?}",
@@ -637,16 +632,6 @@ fn cell_clicked_down(
             // writer.send(dbg!(StartButtonDrag { entity }));
         }
     }
-}
-
-fn cell_start_drag(
-    mut commands: Commands,
-    mut cell_index_query: Query<&DisplayCellButton>,
-    mut reader: EventReader<StartButtonDrag>,
-) {
-    // for &StartButtonDrag { entity } in reader.read() {
-    //     // let () = cell_index_query.get(entity);
-    // }
 }
 
 fn cell_continue_drag(
@@ -665,11 +650,30 @@ fn cell_continue_drag(
         return;
     };
     let window_center = logical_viewport.center();
+    let translate = (cursor_loc - window_center) * Vec2::new(1., -1.);
     for (mut transform, mut drag_target) in &mut q_transform {
-        let translate = (cursor_loc - window_center) * Vec2::new(1., -1.);
         transform.translation.x = translate.x;
         transform.translation.y = translate.y;
         drag_target.latest = cursor_loc;
+        let distance = drag_target.start.distance(drag_target.latest);
+        let angle = (drag_target.start - drag_target.latest).to_angle() + std::f32::consts::PI;
+        let sectors = 4;
+        let frac_adjust = 1. / sectors as f32 / 2.;
+        let pre_angle_frac = angle / std::f32::consts::TAU;
+        let angle_frac = (pre_angle_frac + frac_adjust) % 1.;
+        let sector = (angle_frac * sectors as f32).floor();
+        // info!("drag release distance={distance} sector={sector}");
+        drag_target.op = if distance > 5. {
+            match sector as u8 {
+                0 => Some(UpdateCellIndexOperation::Clear),
+                1 => Some(UpdateCellIndexOperation::Set),
+                2 => Some(UpdateCellIndexOperation::Toggle),
+                3 => Some(UpdateCellIndexOperation::Solo),
+                _ => None,
+            }
+        } else {
+            None
+        };
     }
 }
 
@@ -680,22 +684,7 @@ fn cell_release_drag(
     mut writer: EventWriter<UpdateCellIndex>,
 ) {
     for (entity, &DisplayCellButton { index }, drag_target) in &q_cell {
-        let distance = drag_target.start.distance(drag_target.latest);
-        let angle = (drag_target.start - drag_target.latest).to_angle() + std::f32::consts::PI;
-        let sectors = 4;
-        let frac_adjust = 1. / sectors as f32 / 2.;
-        let pre_angle_frac = angle / std::f32::consts::TAU;
-        let angle_frac = (pre_angle_frac + frac_adjust) % 1.;
-        let sector = (angle_frac * sectors as f32).floor();
-        // info!("drag release distance={distance} sector={sector}");
-        if distance > 5. {
-            let op = match sector as u8 {
-                0 => UpdateCellIndexOperation::Clear,
-                1 => UpdateCellIndexOperation::Set,
-                2 => UpdateCellIndexOperation::Toggle,
-                3 => UpdateCellIndexOperation::Solo,
-                _ => unreachable!(),
-            };
+        if let Some(op) = drag_target.op {
             writer.send(UpdateCellIndex { index, op });
         }
         commands.entity(entity).despawn_recursive();
