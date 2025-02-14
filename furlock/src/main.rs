@@ -37,14 +37,15 @@ fn main() {
         .register_type::<DisplayCellButton>()
         .register_type::<DisplayMatrix>()
         .register_type::<DisplayRow>()
-        .register_type::<HoverScaleEdge>()
         .register_type::<FitHover>()
         .register_type::<FitWithin>()
+        .register_type::<HoverScaleEdge>()
         .register_type::<Puzzle>()
         .register_type::<PuzzleCell>()
         .register_type::<PuzzleRow>()
         .register_type::<SeededRng>()
         .add_observer(cell_clicked_down)
+        .add_observer(cell_continue_drag)
         .add_observer(interact_cell_generic::<OnAdd>(1.25))
         .add_observer(interact_cell_generic::<OnRemove>(1.0))
         .add_observer(interact_drag_ui_move)
@@ -68,11 +69,7 @@ fn main() {
                 //     interact_cell,
                 // )
                 //     .chain(),
-                (
-                    cell_continue_drag,
-                    cell_release_drag.run_if(input_just_released(MouseButton::Left)),
-                )
-                    .chain(),
+                cell_release_drag.run_if(input_just_released(MouseButton::Left)),
                 (cell_update, cell_update_display).chain(),
                 (spawn_row, add_row).chain(),
             ),
@@ -508,7 +505,7 @@ fn fit_inside_row(
         let total_cell_spacing = cell_spacing * (children.len() - 1) as f32;
         let cell_width = (fit_width - total_cell_spacing) / children.len() as f32;
         let mut current_x = fit.min.x;
-        for (display_cell, mut fit_within) in children {
+        for (_, mut fit_within) in children {
             let new_x = current_x + cell_width;
             let cell_rect =
                 Rect::from_corners(Vec2::new(current_x, fit.min.y), Vec2::new(new_x, fit.max.y));
@@ -536,7 +533,7 @@ fn fit_inside_cell(
         let fit_width = fit.width();
         let cell_width = fit_width / children.len() as f32;
         let mut current_x = fit.min.x;
-        for (display_cell, mut fit_within) in children {
+        for (_, mut fit_within) in children {
             let new_x = current_x + cell_width;
             let cell_rect =
                 Rect::from_corners(Vec2::new(current_x, fit.min.y), Vec2::new(new_x, fit.max.y));
@@ -626,7 +623,7 @@ fn interact_cell_generic<T>(
 }
 
 fn interact_drag_ui_move(
-    ev: Trigger<Pointer<Move>>,
+    _ev: Trigger<Pointer<Move>>,
     q_target: Query<&DragTarget>,
     mut q_transform: Query<(&mut Transform, &DragUITarget)>,
 ) {
@@ -646,16 +643,14 @@ fn interact_drag_ui_move(
 
 fn cell_clicked_down(
     mut ev: Trigger<Pointer<Down>>,
-    q_camera: Single<(&Camera, &GlobalTransform)>,
+    q_camera: Single<&Camera>,
     q_window: Query<&Window, With<PrimaryWindow>>,
     q_cell: Query<(Entity, &DisplayCellButton, &GlobalTransform, &Sprite), With<FitHover>>,
     q_ui: Query<Entity, With<DragUI>>,
-    // mut writer: EventWriter<StartButtonDrag>,
     mut commands: Commands,
 ) {
     info!("are we ??? ev={ev:?}");
-    let (camera, camera_transform) = *q_camera;
-    let Some(logical_viewport) = camera.logical_viewport_rect() else {
+    let Some(logical_viewport) = q_camera.logical_viewport_rect() else {
         return;
     };
     let Some(window) = q_window.iter().next() else {
@@ -720,20 +715,14 @@ fn cell_clicked_down(
 }
 
 fn cell_continue_drag(
-    q_camera: Single<(&Camera, &GlobalTransform)>,
-    q_window: Query<&Window, With<PrimaryWindow>>,
+    ev: Trigger<Pointer<Move>>,
+    q_camera: Single<&Camera>,
     mut q_transform: Query<(&mut Transform, &mut DragTarget)>,
 ) {
-    let (camera, camera_transform) = *q_camera;
-    let Some(logical_viewport) = camera.logical_viewport_rect() else {
+    let Some(logical_viewport) = q_camera.logical_viewport_rect() else {
         return;
     };
-    let Some(window) = q_window.iter().next() else {
-        return;
-    };
-    let Some(cursor_loc) = window.cursor_position() else {
-        return;
-    };
+    let cursor_loc = ev.pointer_location.position;
     let window_center = logical_viewport.center();
     let translate = (cursor_loc - window_center) * Vec2::new(1., -1.);
     for (mut transform, mut drag_target) in &mut q_transform {
@@ -779,42 +768,14 @@ fn cell_release_drag(
     }
 }
 
-fn cell_clicked_up(
-    ev: Trigger<Pointer<Up>>,
-    cell_query: Query<(&DisplayCellButton, &Interaction)>,
-    mut puzzle: Single<&mut Puzzle>,
-    mut writer: EventWriter<UpdateCellIndex>,
-) {
-    // info!("click ev={ev:?}");
-    for (&DisplayCellButton { index }, interaction) in &cell_query {
-        // info!("cell={cell:?} int={interaction:?}");
-        if matches!(interaction, Interaction::Pressed) {
-            writer.send(UpdateCellIndex {
-                index,
-                op: UpdateCellIndexOperation::Toggle,
-            });
-        }
-    }
-}
-
 fn cell_update(
-    cell_query: Query<(Entity, &DisplayCell)>,
     mut puzzle: Single<&mut Puzzle>,
     mut reader: EventReader<UpdateCellIndex>,
     mut writer: EventWriter<UpdateCellDisplay>,
 ) {
-    let entity_map = cell_query
-        .iter()
-        .map(|(entity, cell)| (cell.loc, entity))
-        .collect::<HashMap<_, _>>();
     for &UpdateCellIndex { index, op } in reader.read() {
-        let entity = entity_map.get(&index.loc);
         let puzzle_cell = puzzle.cell_mut(index.loc);
         puzzle_cell.apply(index.index, op);
-        // info!(
-        //     "updating: index={index:?} op={op:?} entity={entity:?} state={:x?}",
-        //     puzzle_cell.enabled.as_slice()
-        // );
         writer.send(UpdateCellDisplay { loc: index.loc });
     }
 }
@@ -854,7 +815,6 @@ fn cell_update_display(
     puzzle: Single<&Puzzle>,
     mut reader: EventReader<UpdateCellDisplay>,
     mut q_cell: Query<(
-        Entity,
         &DisplayCellButton,
         &mut Sprite,
         &mut AnimationTarget,
@@ -863,14 +823,13 @@ fn cell_update_display(
     mut q_reader: Query<(&mut AnimationPlayer, &AnimationGraphHandle)>,
     mut animation_clips: ResMut<Assets<AnimationClip>>,
     mut animation_graphs: ResMut<Assets<AnimationGraph>>,
-    mut commands: Commands,
 ) {
     let mut entity_map = HashMap::<_, Vec<_>>::new();
-    for (entity, &DisplayCellButton { index }, sprite, target, hover_edge) in &mut q_cell {
+    for (&DisplayCellButton { index }, sprite, target, hover_edge) in &mut q_cell {
         entity_map
             .entry(index.loc)
             .or_default()
-            .push((index, entity, sprite, target, hover_edge));
+            .push((index, sprite, target, hover_edge));
     }
     for &UpdateCellDisplay { loc } in reader.read() {
         let cell = puzzle.cell(loc);
@@ -880,7 +839,7 @@ fn cell_update_display(
         // info!("updating cell={cell:?}");
         buttons.sort_by_key(|t| t.0);
 
-        for (index, entity, sprite, target, hover_edge) in buttons.iter_mut() {
+        for (index, sprite, target, hover_edge) in buttons.iter_mut() {
             let Ok((mut player, graph_handle)) = q_reader.get_mut(target.player) else {
                 continue;
             };
