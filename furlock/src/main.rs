@@ -37,13 +37,18 @@ fn main() {
         .register_type::<DisplayCellButton>()
         .register_type::<DisplayMatrix>()
         .register_type::<DisplayRow>()
+        .register_type::<DragTarget>()
+        .register_type::<DragUI>()
+        .register_type::<DragUITarget>()
         .register_type::<FitHover>()
         .register_type::<FitWithin>()
+        .register_type::<HoverAlphaEdge>()
         .register_type::<HoverScaleEdge>()
         .register_type::<Puzzle>()
         .register_type::<PuzzleCell>()
         .register_type::<PuzzleRow>()
         .register_type::<SeededRng>()
+        .register_type::<UpdateCellIndexOperation>()
         .add_observer(cell_clicked_down)
         .add_observer(cell_continue_drag)
         .add_observer(interact_cell_generic::<OnAdd>(1.25))
@@ -645,11 +650,10 @@ fn cell_clicked_down(
     mut ev: Trigger<Pointer<Down>>,
     q_camera: Single<&Camera>,
     q_window: Query<&Window, With<PrimaryWindow>>,
-    q_cell: Query<(Entity, &DisplayCellButton, &GlobalTransform, &Sprite), With<FitHover>>,
-    q_ui: Query<Entity, With<DragUI>>,
+    q_cell: Query<(&DisplayCellButton, &GlobalTransform, &Sprite), With<FitHover>>,
+    // q_ui: Query<Entity, With<DragUI>>,
     mut commands: Commands,
 ) {
-    info!("are we ??? ev={ev:?}");
     let Some(logical_viewport) = q_camera.logical_viewport_rect() else {
         return;
     };
@@ -660,16 +664,8 @@ fn cell_clicked_down(
         return;
     };
     let window_center = logical_viewport.center();
-    info!("are we ?");
     let mut dragged = false;
-    for (entity, button, &transform, sprite) in &q_cell {
-        info!(
-            "starting drag entity={:?} button={:?} color={:?} ui={:?}",
-            entity,
-            button,
-            sprite.color,
-            q_ui.iter().count()
-        );
+    for (button, &transform, sprite) in &q_cell {
         let translate = (cursor_loc - window_center) * Vec2::new(1., -1.);
         commands.spawn((
             Sprite::from_color(sprite.color.with_alpha(0.5), Vec2::new(100., 100.)),
