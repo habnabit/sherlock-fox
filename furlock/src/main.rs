@@ -225,6 +225,30 @@ impl Default for HoverAnimationBundle {
 }
 
 #[derive(Bundle)]
+struct RowAnimationBundle {
+    target: AnimationTarget,
+    translation_tracker: RowMoveEdge,
+}
+
+impl RowAnimationBundle {
+    fn new(player: Entity) -> Self {
+        RowAnimationBundle {
+            target: AnimationTarget {
+                id: AnimationTargetId(Uuid::new_v4()),
+                player,
+            },
+            translation_tracker: Default::default(),
+        }
+    }
+}
+
+impl Default for RowAnimationBundle {
+    fn default() -> Self {
+        RowAnimationBundle::new(Entity::PLACEHOLDER)
+    }
+}
+
+#[derive(Bundle)]
 struct RandomColorSprite {
     sprite: Sprite,
     assign: AssignRandomColor,
@@ -277,6 +301,9 @@ struct HoverScaleEdge(Option<NodeIndex>);
 
 #[derive(Reflect, Debug, Component, Clone, Default)]
 struct HoverAlphaEdge(Option<NodeIndex>);
+
+#[derive(Reflect, Debug, Component, Clone, Default)]
+struct RowMoveEdge(Option<NodeIndex>);
 
 #[derive(Resource)]
 struct PuzzleSpawn {
@@ -399,18 +426,20 @@ fn add_row(
         let row_nr = puzzle.rows.len();
         let colors = random_colors(ev.len, &mut rng.0);
         puzzle.add_row(PuzzleRow::new(colors));
+
         commands.entity(*matrix).with_children(|matrix_spawner| {
             matrix_spawner
                 .spawn((
                     FitWithinBundle::new(),
                     // RandomColorSprite::new(),
                     DisplayRow { row_nr },
+                    RowAnimationBundle::new(*matrix),
                 ))
                 .with_children(|row_spawner| {
                     for cell_nr in 0..ev.len {
                         let loc = CellLoc { row_nr, cell_nr };
                         let graph = AnimationGraph::new();
-                        let player = row_spawner
+                        let cell_player = row_spawner
                             .spawn((
                                 AnimationPlayer::default(),
                                 AnimationGraphHandle(animation_graphs.add(graph)),
@@ -434,7 +463,7 @@ fn add_row(
                                             DisplayCellButton {
                                                 index: CellLocIndex { loc, index },
                                             },
-                                            HoverAnimationBundle::new(player),
+                                            HoverAnimationBundle::new(cell_player),
                                         ))
                                         .with_child((
                                             Text2d::new(format!("{index}")),
@@ -446,7 +475,6 @@ fn add_row(
                 });
         });
     }
-    // commands.spawn(observer);
 }
 
 fn fit_inside_window(
@@ -456,13 +484,14 @@ fn fit_inside_window(
     let Some(logical_viewport) = q_camera.logical_viewport_rect() else {
         return;
     };
+    // info!("ok doing a base fit within {:?}", logical_viewport);
     for mut fit_within in &mut q_fit_root {
         fit_within.set_rect(logical_viewport.inflate(-50.));
     }
 }
 
 fn fit_inside_matrix(
-    q_parent: Query<&FitWithin, (With<DisplayMatrix>, Without<DisplayRow>)>,
+    q_parent: Query<&FitWithin, (With<DisplayMatrix>, Without<DisplayRow>, Changed<FitWithin>)>,
     mut q_child: Query<(&mut FitWithin, &Parent, &DisplayRow)>,
 ) {
     let mut row_map = HashMap::<Entity, _>::new();
@@ -490,7 +519,7 @@ fn fit_inside_matrix(
 }
 
 fn fit_inside_row(
-    q_parent: Query<&FitWithin, (With<DisplayRow>, Without<DisplayCell>)>,
+    q_parent: Query<&FitWithin, (With<DisplayRow>, Without<DisplayCell>, Changed<FitWithin>)>,
     mut q_child: Query<(&mut FitWithin, &Parent, &DisplayCell)>,
 ) {
     let mut cell_map = HashMap::<Entity, _>::new();
@@ -521,7 +550,14 @@ fn fit_inside_row(
 }
 
 fn fit_inside_cell(
-    q_parent: Query<&FitWithin, (With<DisplayCell>, Without<DisplayCellButton>)>,
+    q_parent: Query<
+        &FitWithin,
+        (
+            With<DisplayCell>,
+            Without<DisplayCellButton>,
+            Changed<FitWithin>,
+        ),
+    >,
     mut q_child: Query<(&mut FitWithin, &Parent, &DisplayCellButton)>,
 ) {
     let mut cell_map = HashMap::<Entity, _>::new();
@@ -548,7 +584,13 @@ fn fit_inside_cell(
     }
 }
 
-fn fit_to_transform(mut q_fit: Query<(Entity, &FitWithin, Option<&Parent>, &mut Transform)>) {
+fn fit_to_transform(
+    mut q_fit: Query<(Entity, &mut FitWithin, Option<&Parent>, &mut Transform), Changed<FitWithin>>,
+    mut q_animation: Query<(&AnimationTarget, &mut RowMoveEdge)>,
+    mut q_reader: Query<(&mut AnimationPlayer, &AnimationGraphHandle)>,
+    mut animation_clips: ResMut<Assets<AnimationClip>>,
+    mut animation_graphs: ResMut<Assets<AnimationGraph>>,
+) {
     let updates = q_fit
         .iter()
         .filter_map(|(entity, fit, parent, _)| {
@@ -559,11 +601,44 @@ fn fit_to_transform(mut q_fit: Query<(Entity, &FitWithin, Option<&Parent>, &mut 
         })
         .collect::<Vec<_>>();
     for (entity, translate) in updates {
-        let Ok((_, _, _, mut transform)) = q_fit.get_mut(entity) else {
+        let Ok((_, mut fit, _, mut transform)) = q_fit.get_mut(entity) else {
             continue;
         };
-        transform.translation.x = translate.x;
-        transform.translation.y = translate.y;
+        if !fit.updating {
+            continue;
+        }
+        fit.updating = false;
+        if let Ok((target, mut row_edge)) = q_animation.get_mut(entity) {
+            let translate = (translate, 0.).into();
+            let Ok((mut player, graph_handle)) = q_reader.get_mut(target.player) else {
+                continue;
+            };
+            let Some(graph) = animation_graphs.get_mut(graph_handle.id()) else {
+                continue;
+            };
+
+            let mut clip = AnimationClip::default();
+            clip.add_curve_to_target(
+                target.id,
+                AnimatableCurve::new(
+                    animated_field!(Transform::translation),
+                    EasingCurve::new(transform.translation, translate, EaseFunction::CubicOut)
+                        .reparametrize_linear(interval(0., 0.25).unwrap())
+                        .unwrap(),
+                ),
+            );
+
+            if let Some(prev_node) = row_edge.0 {
+                graph.remove_edge(graph.root, prev_node);
+            }
+            let clip_handle = animation_clips.add(clip);
+            let node_index = graph.add_clip(clip_handle, 1., graph.root);
+            player.play(node_index);
+            row_edge.0 = Some(node_index);
+        } else {
+            transform.translation.x = translate.x;
+            transform.translation.y = translate.y;
+        }
     }
 }
 
@@ -870,15 +945,17 @@ fn cell_update_display(
     }
 }
 
-fn setup(mut commands: Commands) {
+fn setup(mut commands: Commands, mut animation_graphs: ResMut<Assets<AnimationGraph>>) {
     commands.spawn(Camera2d);
     commands.spawn(<Puzzle as Default>::default());
     commands.insert_resource(PuzzleSpawn {
-        timer: Timer::new(Duration::from_secs_f32(0.1), TimerMode::Repeating),
+        timer: Timer::new(Duration::from_secs_f32(0.25), TimerMode::Repeating),
     });
     commands.spawn((
         DisplayMatrix,
         FitWithinBundle::new(),
+        AnimationPlayer::default(),
+        AnimationGraphHandle(animation_graphs.add(AnimationGraph::new())),
         // RandomColorSprite::new(),
     ));
 }
