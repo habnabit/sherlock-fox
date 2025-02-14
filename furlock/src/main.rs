@@ -5,19 +5,24 @@
 use std::time::Duration;
 
 use bevy::{
-    color::palettes::css, input::common_conditions::input_just_released, prelude::*,
-    utils::hashbrown::HashMap, window::PrimaryWindow,
+    animation::{animated_field, AnimationTarget, AnimationTargetId},
+    color::palettes::css,
+    input::common_conditions::input_just_released,
+    prelude::*,
+    utils::hashbrown::HashMap,
+    window::PrimaryWindow,
 };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use fixedbitset::FixedBitSet;
 use rand::{distr::Distribution, seq::SliceRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use uuid::Uuid;
 
 fn main() {
     App::new()
         .init_resource::<SeededRng>()
         .add_plugins(DefaultPlugins)
-        // .add_plugins(WorldInspectorPlugin::new())
+        .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddRow>()
         .add_event::<UpdateCellDisplay>()
         .add_event::<UpdateCellIndex>()
@@ -186,6 +191,25 @@ impl FitWithinBundle {
     }
 }
 
+#[derive(Reflect, Debug, Component)]
+struct HoverAnimator;
+
+#[derive(Bundle)]
+struct HoverAnimationBundle {
+    target: AnimationTarget,
+}
+
+impl HoverAnimationBundle {
+    fn new(player: Entity) -> Self {
+        HoverAnimationBundle {
+            target: AnimationTarget {
+                id: AnimationTargetId(Uuid::new_v4()),
+                player,
+            },
+        }
+    }
+}
+
 #[derive(Bundle)]
 struct RandomColorSprite {
     sprite: Sprite,
@@ -349,7 +373,11 @@ fn add_row(
     mut rng: ResMut<SeededRng>,
     mut puzzle: Single<&mut Puzzle>,
     matrix: Single<Entity, With<DisplayMatrix>>,
+    q_player: Query<Entity, (With<AnimationPlayer>, With<HoverAnimator>)>,
 ) {
+    let Some(player) = q_player.iter().next() else {
+        return;
+    };
     for ev in reader.read() {
         let row_nr = puzzle.rows.len();
         let colors = random_colors(ev.len, &mut rng.0);
@@ -382,6 +410,7 @@ fn add_row(
                                             DisplayCellButton {
                                                 index: CellLocIndex { loc, index },
                                             },
+                                            HoverAnimationBundle::new(player),
                                         ))
                                         .with_child((
                                             Text2d::new(format!("{index}")),
@@ -532,27 +561,101 @@ fn mouse_out_fit(ev: Trigger<Pointer<Out>>, mut commands: Commands) {
 
 fn interact_cell_over(
     ev: Trigger<OnAdd, FitHover>,
-    mut q_transform: Query<&mut Transform, With<DisplayCellButton>>,
+    q_target: Query<(&Transform, &AnimationTarget), With<DisplayCellButton>>,
+    mut q_player: Query<(&mut AnimationPlayer, &AnimationGraphHandle), With<HoverAnimator>>,
+    mut animation_clips: ResMut<Assets<AnimationClip>>,
+    mut animation_graphs: ResMut<Assets<AnimationGraph>>,
+    // mut commands: Commands,
 ) {
-    let Ok(mut transform) = q_transform.get_mut(ev.entity()) else {
+    let Ok((transform, target)) = q_target.get(ev.entity()) else {
         return;
     };
-    const SCALE: f32 = 1.25;
-    transform.scale.x = SCALE;
-    transform.scale.y = SCALE;
+    let Some((mut player, graph)) = q_player.iter_mut().next() else {
+        return;
+    };
+    let Some(graph) = animation_graphs.get_mut(graph.id()) else {
+        return;
+    };
+    info!("over transform={transform:?} target={:?}", target.id);
+    let mut clip = AnimationClip::default();
+    clip.add_curve_to_target(
+        target.id,
+        AnimatableCurve::new(
+            animated_field!(Transform::scale),
+            EasingCurve::new(
+                transform.scale,
+                Vec3::new(1.25, 1.25, 1.0),
+                EaseFunction::CubicOut,
+            )
+            .reparametrize_linear(interval(0., 0.25).unwrap())
+            .unwrap(),
+        ),
+    );
+    let clip_handle = animation_clips.add(clip);
+    let node_index = graph.add_clip(clip_handle, 1., graph.root);
+    // let (graph, node_index) = AnimationGraph::from_clip(clip_handle);
+    // let graph_handle = animation_graphs.add(graph);
+    player.play(node_index);
+    // commands.entity(ev.entity()).insert(AnimationGraphHandle(graph_handle));
+    // const SCALE: f32 = 1.25;
+    // transform.scale.x = SCALE;
+    // transform.scale.y = SCALE;
 }
 
 fn interact_cell_out(
     ev: Trigger<OnRemove, FitHover>,
-    mut q_transform: Query<&mut Transform, With<DisplayCellButton>>,
+    q_target: Query<(&Transform, &AnimationTarget), With<DisplayCellButton>>,
+    mut q_player: Query<(&mut AnimationPlayer, &AnimationGraphHandle), With<HoverAnimator>>,
+    mut animation_clips: ResMut<Assets<AnimationClip>>,
+    mut animation_graphs: ResMut<Assets<AnimationGraph>>,
+    // mut commands: Commands,
 ) {
-    let Ok(mut transform) = q_transform.get_mut(ev.entity()) else {
+    let Ok((transform, target)) = q_target.get(ev.entity()) else {
         return;
     };
-    const SCALE: f32 = 1.0;
-    transform.scale.x = SCALE;
-    transform.scale.y = SCALE;
+    let Some((mut player, graph)) = q_player.iter_mut().next() else {
+        return;
+    };
+    let Some(graph) = animation_graphs.get_mut(graph.id()) else {
+        return;
+    };
+    info!("out transform={transform:?} target={:?}", target.id);
+    let mut clip = AnimationClip::default();
+    clip.add_curve_to_target(
+        target.id,
+        AnimatableCurve::new(
+            animated_field!(Transform::scale),
+            EasingCurve::new(
+                transform.scale,
+                Vec3::new(1., 1., 1.0),
+                EaseFunction::CubicOut,
+            )
+            .reparametrize_linear(interval(0., 0.25).unwrap())
+            .unwrap(),
+        ),
+    );
+    let clip_handle = animation_clips.add(clip);
+    let node_index = graph.add_clip(clip_handle, 1., graph.root);
+    // let (graph, node_index) = AnimationGraph::from_clip(clip_handle);
+    // let graph_handle = animation_graphs.add(graph);
+    player.play(node_index);
+    // commands.entity(ev.entity()).insert(AnimationGraphHandle(graph_handle));
+    // const SCALE: f32 = 1.25;
+    // transform.scale.x = SCALE;
+    // transform.scale.y = SCALE;
 }
+
+// fn interact_cell_out(
+//     ev: Trigger<OnRemove, FitHover>,
+//     mut q_transform: Query<&mut Transform, With<DisplayCellButton>>,
+// ) {
+//     let Ok(mut transform) = q_transform.get_mut(ev.entity()) else {
+//         return;
+//     };
+//     const SCALE: f32 = 1.0;
+//     transform.scale.x = SCALE;
+//     transform.scale.y = SCALE;
+// }
 
 fn interact_drag_ui_move(
     ev: Trigger<Pointer<Move>>,
@@ -779,13 +882,18 @@ fn cell_update_display(
     }
 }
 
-fn setup(mut commands: Commands) {
+fn setup(mut commands: Commands, mut animation_graphs: ResMut<Assets<AnimationGraph>>) {
     commands.spawn(Camera2d);
     commands.spawn(<Puzzle as Default>::default());
     commands.insert_resource(PuzzleSpawn {
         timer: Timer::new(Duration::from_secs_f32(0.1), TimerMode::Repeating),
     });
-
+    let graph = AnimationGraph::new();
+    commands.spawn((
+        AnimationPlayer::default(),
+        HoverAnimator,
+        AnimationGraphHandle(animation_graphs.add(graph)),
+    ));
     commands.spawn((
         DisplayMatrix,
         FitWithinBundle::new(),
