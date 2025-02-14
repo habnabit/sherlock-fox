@@ -17,6 +17,7 @@ use bevy::{
 };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use fixedbitset::FixedBitSet;
+use petgraph::graph::NodeIndex;
 use rand::{distr::Distribution, seq::SliceRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use uuid::Uuid;
@@ -36,6 +37,7 @@ fn main() {
         .register_type::<DisplayCellButton>()
         .register_type::<DisplayMatrix>()
         .register_type::<DisplayRow>()
+        .register_type::<HoverScaleEdge>()
         .register_type::<FitHover>()
         .register_type::<FitWithin>()
         .register_type::<Puzzle>()
@@ -197,16 +199,26 @@ impl FitWithinBundle {
 #[derive(Bundle)]
 struct HoverAnimationBundle {
     target: AnimationTarget,
+    scale_tracker: HoverScaleEdge,
+    alpha_tracker: HoverAlphaEdge,
+}
+
+impl HoverAnimationBundle {
+    fn new(player: Entity) -> Self {
+        HoverAnimationBundle {
+            target: AnimationTarget {
+                id: AnimationTargetId(Uuid::new_v4()),
+                player,
+            },
+            scale_tracker: Default::default(),
+            alpha_tracker: Default::default(),
+        }
+    }
 }
 
 impl Default for HoverAnimationBundle {
     fn default() -> Self {
-        HoverAnimationBundle {
-            target: AnimationTarget {
-                id: AnimationTargetId(Uuid::new_v4()),
-                player: Entity::PLACEHOLDER,
-            },
-        }
+        HoverAnimationBundle::new(Entity::PLACEHOLDER)
     }
 }
 
@@ -257,6 +269,12 @@ struct DisplayCell {
 struct DisplayCellButton {
     index: CellLocIndex,
 }
+
+#[derive(Reflect, Debug, Component, Clone, Default)]
+struct HoverScaleEdge(Option<NodeIndex>);
+
+#[derive(Reflect, Debug, Component, Clone, Default)]
+struct HoverAlphaEdge(Option<NodeIndex>);
 
 #[derive(Resource)]
 struct PuzzleSpawn {
@@ -373,6 +391,7 @@ fn add_row(
     mut rng: ResMut<SeededRng>,
     mut puzzle: Single<&mut Puzzle>,
     matrix: Single<Entity, With<DisplayMatrix>>,
+    mut animation_graphs: ResMut<Assets<AnimationGraph>>,
 ) {
     for ev in reader.read() {
         let row_nr = puzzle.rows.len();
@@ -388,6 +407,13 @@ fn add_row(
                 .with_children(|row_spawner| {
                     for cell_nr in 0..ev.len {
                         let loc = CellLoc { row_nr, cell_nr };
+                        let graph = AnimationGraph::new();
+                        let player = row_spawner
+                            .spawn((
+                                AnimationPlayer::default(),
+                                AnimationGraphHandle(animation_graphs.add(graph)),
+                            ))
+                            .id();
                         row_spawner
                             .spawn((
                                 FitWithinBundle::new(),
@@ -406,7 +432,7 @@ fn add_row(
                                             DisplayCellButton {
                                                 index: CellLocIndex { loc, index },
                                             },
-                                            HoverAnimationBundle::default(),
+                                            HoverAnimationBundle::new(player),
                                         ))
                                         .with_child((
                                             Text2d::new(format!("{index}")),
@@ -559,17 +585,22 @@ fn interact_cell_generic<T>(
     target_scale_xy: f32,
 ) -> impl Fn(
     Trigger<T, FitHover>,
-    Query<(&Transform, &mut AnimationTarget), With<DisplayCellButton>>,
+    Query<(&Transform, &AnimationTarget, &mut HoverScaleEdge), With<DisplayCellButton>>,
+    Query<(&mut AnimationPlayer, &AnimationGraphHandle)>,
     ResMut<Assets<AnimationClip>>,
     ResMut<Assets<AnimationGraph>>,
-    Commands,
 ) {
-    move |ev, mut q_target, mut animation_clips, mut animation_graphs, mut commands| {
-        let Ok((transform, mut target)) = q_target.get_mut(ev.entity()) else {
+    move |ev, mut q_target, mut q_player, mut animation_clips, mut animation_graphs| {
+        let Ok((transform, target, mut hover_edge)) = q_target.get_mut(ev.entity()) else {
             return;
         };
-        let mut player = AnimationPlayer::default();
-        let mut graph = AnimationGraph::new();
+        let Ok((mut player, graph_handle)) = q_player.get_mut(target.player) else {
+            return;
+        };
+        let Some(graph) = animation_graphs.get_mut(graph_handle.id()) else {
+            return;
+        };
+
         let mut clip = AnimationClip::default();
         clip.add_curve_to_target(
             target.id,
@@ -585,12 +616,12 @@ fn interact_cell_generic<T>(
             ),
         );
         let clip_handle = animation_clips.add(clip);
+        if let Some(prev_node) = hover_edge.0 {
+            graph.remove_edge(graph.root, prev_node);
+        }
         let node_index = graph.add_clip(clip_handle, 1., graph.root);
         player.play(node_index);
-        commands
-            .entity(ev.entity())
-            .insert((player, AnimationGraphHandle(animation_graphs.add(graph))));
-        target.player = ev.entity();
+        hover_edge.0 = Some(node_index);
     }
 }
 
@@ -827,18 +858,19 @@ fn cell_update_display(
         &DisplayCellButton,
         &mut Sprite,
         &mut AnimationTarget,
-        &Parent,
+        &mut HoverAlphaEdge,
     )>,
+    mut q_reader: Query<(&mut AnimationPlayer, &AnimationGraphHandle)>,
     mut animation_clips: ResMut<Assets<AnimationClip>>,
     mut animation_graphs: ResMut<Assets<AnimationGraph>>,
     mut commands: Commands,
 ) {
     let mut entity_map = HashMap::<_, Vec<_>>::new();
-    for (entity, &DisplayCellButton { index }, sprite, target, parent) in &mut q_cell {
+    for (entity, &DisplayCellButton { index }, sprite, target, hover_edge) in &mut q_cell {
         entity_map
             .entry(index.loc)
             .or_default()
-            .push((index, entity, sprite, target, parent));
+            .push((index, entity, sprite, target, hover_edge));
     }
     for &UpdateCellDisplay { loc } in reader.read() {
         let cell = puzzle.cell(loc);
@@ -848,12 +880,13 @@ fn cell_update_display(
         // info!("updating cell={cell:?}");
         buttons.sort_by_key(|t| t.0);
 
-        let mut player = AnimationPlayer::default();
-        let mut graph = AnimationGraph::new();
-        let mut a_parent = None;
-
-        for (index, entity, sprite, target, parent) in buttons.iter_mut() {
-            a_parent.get_or_insert(parent);
+        for (index, entity, sprite, target, hover_edge) in buttons.iter_mut() {
+            let Ok((mut player, graph_handle)) = q_reader.get_mut(target.player) else {
+                continue;
+            };
+            let Some(graph) = animation_graphs.get_mut(graph_handle.id()) else {
+                continue;
+            };
             let alpha = if cell.enabled.contains(index.index) {
                 1.
             } else {
@@ -871,18 +904,13 @@ fn cell_update_display(
                 ),
             );
 
+            if let Some(prev_node) = hover_edge.0 {
+                graph.remove_edge(graph.root, prev_node);
+            }
             let clip_handle = animation_clips.add(clip);
             let node_index = graph.add_clip(clip_handle, 1., graph.root);
             player.play(node_index);
-        }
-
-        let parent = a_parent.unwrap();
-        let player = commands
-            .entity(parent.get())
-            .insert((player, AnimationGraphHandle(animation_graphs.add(graph))))
-            .id();
-        for (_, _, _, ref mut target, _) in buttons.iter_mut() {
-            target.player = player;
+            hover_edge.0 = Some(node_index);
         }
     }
 }
