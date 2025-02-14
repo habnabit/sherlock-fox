@@ -2,10 +2,13 @@
 //
 // SPDX-License-Identifier: EUPL-1.2
 
-use std::time::Duration;
+use std::{any::TypeId, time::Duration};
 
 use bevy::{
-    animation::{animated_field, AnimationTarget, AnimationTargetId},
+    animation::{
+        animated_field, AnimationEntityMut, AnimationEvaluationError, AnimationTarget,
+        AnimationTargetId,
+    },
     color::palettes::css,
     input::common_conditions::input_just_released,
     prelude::*,
@@ -40,8 +43,8 @@ fn main() {
         .register_type::<PuzzleRow>()
         .register_type::<SeededRng>()
         .add_observer(cell_clicked_down)
-        .add_observer(interact_cell_out)
-        .add_observer(interact_cell_over)
+        .add_observer(interact_cell_generic::<OnAdd>(1.25))
+        .add_observer(interact_cell_generic::<OnRemove>(1.0))
         .add_observer(interact_drag_ui_move)
         .add_observer(mouse_out_fit)
         .add_observer(mouse_over_fit)
@@ -191,20 +194,17 @@ impl FitWithinBundle {
     }
 }
 
-#[derive(Reflect, Debug, Component)]
-struct HoverAnimator;
-
 #[derive(Bundle)]
 struct HoverAnimationBundle {
     target: AnimationTarget,
 }
 
-impl HoverAnimationBundle {
-    fn new(player: Entity) -> Self {
+impl Default for HoverAnimationBundle {
+    fn default() -> Self {
         HoverAnimationBundle {
             target: AnimationTarget {
                 id: AnimationTargetId(Uuid::new_v4()),
-                player,
+                player: Entity::PLACEHOLDER,
             },
         }
     }
@@ -373,11 +373,7 @@ fn add_row(
     mut rng: ResMut<SeededRng>,
     mut puzzle: Single<&mut Puzzle>,
     matrix: Single<Entity, With<DisplayMatrix>>,
-    q_player: Query<Entity, (With<AnimationPlayer>, With<HoverAnimator>)>,
 ) {
-    let Some(player) = q_player.iter().next() else {
-        return;
-    };
     for ev in reader.read() {
         let row_nr = puzzle.rows.len();
         let colors = random_colors(ev.len, &mut rng.0);
@@ -410,7 +406,7 @@ fn add_row(
                                             DisplayCellButton {
                                                 index: CellLocIndex { loc, index },
                                             },
-                                            HoverAnimationBundle::new(player),
+                                            HoverAnimationBundle::default(),
                                         ))
                                         .with_child((
                                             Text2d::new(format!("{index}")),
@@ -559,103 +555,44 @@ fn mouse_out_fit(ev: Trigger<Pointer<Out>>, mut commands: Commands) {
     cmd.remove::<FitHover>();
 }
 
-fn interact_cell_over(
-    ev: Trigger<OnAdd, FitHover>,
-    q_target: Query<(&Transform, &AnimationTarget), With<DisplayCellButton>>,
-    mut q_player: Query<(&mut AnimationPlayer, &AnimationGraphHandle), With<HoverAnimator>>,
-    mut animation_clips: ResMut<Assets<AnimationClip>>,
-    mut animation_graphs: ResMut<Assets<AnimationGraph>>,
-    // mut commands: Commands,
+fn interact_cell_generic<T>(
+    target_scale_xy: f32,
+) -> impl Fn(
+    Trigger<T, FitHover>,
+    Query<(&Transform, &mut AnimationTarget), With<DisplayCellButton>>,
+    ResMut<Assets<AnimationClip>>,
+    ResMut<Assets<AnimationGraph>>,
+    Commands,
 ) {
-    let Ok((transform, target)) = q_target.get(ev.entity()) else {
-        return;
-    };
-    let Some((mut player, graph)) = q_player.iter_mut().next() else {
-        return;
-    };
-    let Some(graph) = animation_graphs.get_mut(graph.id()) else {
-        return;
-    };
-    info!("over transform={transform:?} target={:?}", target.id);
-    let mut clip = AnimationClip::default();
-    clip.add_curve_to_target(
-        target.id,
-        AnimatableCurve::new(
-            animated_field!(Transform::scale),
-            EasingCurve::new(
-                transform.scale,
-                Vec3::new(1.25, 1.25, 1.0),
-                EaseFunction::CubicOut,
-            )
-            .reparametrize_linear(interval(0., 0.25).unwrap())
-            .unwrap(),
-        ),
-    );
-    let clip_handle = animation_clips.add(clip);
-    let node_index = graph.add_clip(clip_handle, 1., graph.root);
-    // let (graph, node_index) = AnimationGraph::from_clip(clip_handle);
-    // let graph_handle = animation_graphs.add(graph);
-    player.play(node_index);
-    // commands.entity(ev.entity()).insert(AnimationGraphHandle(graph_handle));
-    // const SCALE: f32 = 1.25;
-    // transform.scale.x = SCALE;
-    // transform.scale.y = SCALE;
+    move |ev, mut q_target, mut animation_clips, mut animation_graphs, mut commands| {
+        let Ok((transform, mut target)) = q_target.get_mut(ev.entity()) else {
+            return;
+        };
+        let mut player = AnimationPlayer::default();
+        let mut graph = AnimationGraph::new();
+        let mut clip = AnimationClip::default();
+        clip.add_curve_to_target(
+            target.id,
+            AnimatableCurve::new(
+                animated_field!(Transform::scale),
+                EasingCurve::new(
+                    transform.scale,
+                    Vec3::new(target_scale_xy, target_scale_xy, 1.0),
+                    EaseFunction::CubicOut,
+                )
+                .reparametrize_linear(interval(0., 0.25).unwrap())
+                .unwrap(),
+            ),
+        );
+        let clip_handle = animation_clips.add(clip);
+        let node_index = graph.add_clip(clip_handle, 1., graph.root);
+        player.play(node_index);
+        commands
+            .entity(ev.entity())
+            .insert((player, AnimationGraphHandle(animation_graphs.add(graph))));
+        target.player = ev.entity();
+    }
 }
-
-fn interact_cell_out(
-    ev: Trigger<OnRemove, FitHover>,
-    q_target: Query<(&Transform, &AnimationTarget), With<DisplayCellButton>>,
-    mut q_player: Query<(&mut AnimationPlayer, &AnimationGraphHandle), With<HoverAnimator>>,
-    mut animation_clips: ResMut<Assets<AnimationClip>>,
-    mut animation_graphs: ResMut<Assets<AnimationGraph>>,
-    // mut commands: Commands,
-) {
-    let Ok((transform, target)) = q_target.get(ev.entity()) else {
-        return;
-    };
-    let Some((mut player, graph)) = q_player.iter_mut().next() else {
-        return;
-    };
-    let Some(graph) = animation_graphs.get_mut(graph.id()) else {
-        return;
-    };
-    info!("out transform={transform:?} target={:?}", target.id);
-    let mut clip = AnimationClip::default();
-    clip.add_curve_to_target(
-        target.id,
-        AnimatableCurve::new(
-            animated_field!(Transform::scale),
-            EasingCurve::new(
-                transform.scale,
-                Vec3::new(1., 1., 1.0),
-                EaseFunction::CubicOut,
-            )
-            .reparametrize_linear(interval(0., 0.25).unwrap())
-            .unwrap(),
-        ),
-    );
-    let clip_handle = animation_clips.add(clip);
-    let node_index = graph.add_clip(clip_handle, 1., graph.root);
-    // let (graph, node_index) = AnimationGraph::from_clip(clip_handle);
-    // let graph_handle = animation_graphs.add(graph);
-    player.play(node_index);
-    // commands.entity(ev.entity()).insert(AnimationGraphHandle(graph_handle));
-    // const SCALE: f32 = 1.25;
-    // transform.scale.x = SCALE;
-    // transform.scale.y = SCALE;
-}
-
-// fn interact_cell_out(
-//     ev: Trigger<OnRemove, FitHover>,
-//     mut q_transform: Query<&mut Transform, With<DisplayCellButton>>,
-// ) {
-//     let Ok(mut transform) = q_transform.get_mut(ev.entity()) else {
-//         return;
-//     };
-//     const SCALE: f32 = 1.0;
-//     transform.scale.x = SCALE;
-//     transform.scale.y = SCALE;
-// }
 
 fn interact_drag_ui_move(
     ev: Trigger<Pointer<Move>>,
@@ -851,17 +788,57 @@ fn cell_update(
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ButtonOpacityAnimation;
+
+impl AnimatableProperty for ButtonOpacityAnimation {
+    type Property = f32;
+
+    fn evaluator_id(&self) -> EvaluatorId {
+        EvaluatorId::Type(TypeId::of::<Self>())
+    }
+
+    fn get_mut<'a>(
+        &self,
+        entity: &'a mut AnimationEntityMut,
+    ) -> Result<&'a mut Self::Property, AnimationEvaluationError> {
+        let sprite = entity
+            .get_mut::<Sprite>()
+            .ok_or(AnimationEvaluationError::ComponentNotPresent(TypeId::of::<
+                Sprite,
+            >(
+            )))?
+            .into_inner();
+        match &mut sprite.color {
+            Color::Hsla(color) => Ok(&mut color.alpha),
+            _ => Err(AnimationEvaluationError::PropertyNotPresent(TypeId::of::<
+                Color,
+            >(
+            ))),
+        }
+    }
+}
+
 fn cell_update_display(
     puzzle: Single<&Puzzle>,
-    mut cell_index_query: Query<(&DisplayCellButton, &mut Sprite)>,
     mut reader: EventReader<UpdateCellDisplay>,
+    mut q_cell: Query<(
+        Entity,
+        &DisplayCellButton,
+        &mut Sprite,
+        &mut AnimationTarget,
+        &Parent,
+    )>,
+    mut animation_clips: ResMut<Assets<AnimationClip>>,
+    mut animation_graphs: ResMut<Assets<AnimationGraph>>,
+    mut commands: Commands,
 ) {
     let mut entity_map = HashMap::<_, Vec<_>>::new();
-    for (&DisplayCellButton { index }, sprite) in &mut cell_index_query {
+    for (entity, &DisplayCellButton { index }, sprite, target, parent) in &mut q_cell {
         entity_map
             .entry(index.loc)
             .or_default()
-            .push((index, sprite));
+            .push((index, entity, sprite, target, parent));
     }
     for &UpdateCellDisplay { loc } in reader.read() {
         let cell = puzzle.cell(loc);
@@ -869,31 +846,53 @@ fn cell_update_display(
             unreachable!()
         };
         // info!("updating cell={cell:?}");
-        buttons.sort_by_key(|(index, _)| *index);
-        for (index, sprite) in buttons.iter_mut() {
+        buttons.sort_by_key(|t| t.0);
+
+        let mut player = AnimationPlayer::default();
+        let mut graph = AnimationGraph::new();
+        let mut a_parent = None;
+
+        for (index, entity, sprite, target, parent) in buttons.iter_mut() {
+            a_parent.get_or_insert(parent);
             let alpha = if cell.enabled.contains(index.index) {
                 1.
             } else {
                 0.2
             };
-            // info!("  sprite @{index:?} = a{alpha}");
-            sprite.color.set_alpha(alpha);
+
+            let mut clip = AnimationClip::default();
+            clip.add_curve_to_target(
+                target.id,
+                AnimatableCurve::new(
+                    ButtonOpacityAnimation,
+                    EasingCurve::new(sprite.color.alpha(), alpha, EaseFunction::CubicOut)
+                        .reparametrize_linear(interval(0., 0.25).unwrap())
+                        .unwrap(),
+                ),
+            );
+
+            let clip_handle = animation_clips.add(clip);
+            let node_index = graph.add_clip(clip_handle, 1., graph.root);
+            player.play(node_index);
+        }
+
+        let parent = a_parent.unwrap();
+        let player = commands
+            .entity(parent.get())
+            .insert((player, AnimationGraphHandle(animation_graphs.add(graph))))
+            .id();
+        for (_, _, _, ref mut target, _) in buttons.iter_mut() {
+            target.player = player;
         }
     }
 }
 
-fn setup(mut commands: Commands, mut animation_graphs: ResMut<Assets<AnimationGraph>>) {
+fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
     commands.spawn(<Puzzle as Default>::default());
     commands.insert_resource(PuzzleSpawn {
         timer: Timer::new(Duration::from_secs_f32(0.1), TimerMode::Repeating),
     });
-    let graph = AnimationGraph::new();
-    commands.spawn((
-        AnimationPlayer::default(),
-        HoverAnimator,
-        AnimationGraphHandle(animation_graphs.add(graph)),
-    ));
     commands.spawn((
         DisplayMatrix,
         FitWithinBundle::new(),
