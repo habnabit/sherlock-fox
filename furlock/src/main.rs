@@ -44,6 +44,7 @@ fn main() {
         .register_type::<FitWithin>()
         .register_type::<HoverAlphaEdge>()
         .register_type::<HoverScaleEdge>()
+        .register_type::<NeedsFitting>()
         .register_type::<Puzzle>()
         .register_type::<PuzzleCell>()
         .register_type::<PuzzleRow>()
@@ -51,6 +52,7 @@ fn main() {
         .register_type::<UpdateCellIndexOperation>()
         .add_observer(cell_clicked_down)
         .add_observer(cell_continue_drag)
+        .add_observer(fit_to_transform)
         .add_observer(interact_cell_generic::<OnAdd>(1.25))
         .add_observer(interact_cell_generic::<OnRemove>(1.0))
         .add_observer(interact_drag_ui_move)
@@ -66,7 +68,6 @@ fn main() {
                     fit_inside_matrix,
                     fit_inside_row,
                     fit_inside_cell,
-                    fit_to_transform,
                 )
                     .chain(),
                 // (
@@ -159,24 +160,33 @@ impl Puzzle {
 #[derive(Reflect, Debug, Component, Default)]
 struct FitWithin {
     rect: Rect,
-    updating: bool,
+    updated: bool,
 }
 
 impl FitWithin {
     fn new(rect: Rect) -> Self {
         FitWithin {
             rect,
-            updating: true,
+            updated: true,
         }
     }
 
     fn set_rect(&mut self, new_rect: Rect) {
         if self.rect != new_rect {
-            self.updating = true;
+            self.updated = true;
         }
         self.rect = new_rect;
     }
+
+    fn flush_commands(&mut self, me: Entity, commands: &mut Commands) {
+        if self.updated {
+            commands.entity(me).insert(NeedsFitting);
+        }
+    }
 }
+
+#[derive(Reflect, Debug, Component)]
+struct NeedsFitting;
 
 #[derive(Reflect, Debug, Component)]
 struct FitHover;
@@ -484,16 +494,18 @@ fn fit_inside_window(
     let Some(logical_viewport) = q_camera.logical_viewport_rect() else {
         return;
     };
-    // info!("ok doing a base fit within {:?}", logical_viewport);
     for mut fit_within in &mut q_fit_root {
+        info!("fit_within before={:?}", fit_within);
         fit_within.set_rect(logical_viewport.inflate(-50.));
+        info!("fit_within after={:?}", fit_within);
     }
 }
 
 fn fit_inside_matrix(
-    q_parent: Query<&FitWithin, (With<DisplayMatrix>, Without<DisplayRow>, Changed<FitWithin>)>,
-    mut q_child: Query<(&mut FitWithin, &Parent, &DisplayRow)>,
+    q_parent: Query<&FitWithin, (With<DisplayMatrix>, Without<DisplayRow>)>,
+    mut q_child: Query<(&mut FitWithin, &Parent, &DisplayRow), With<NeedsFitting>>,
 ) {
+    info!("fitting row inside matrix");
     let mut row_map = HashMap::<Entity, _>::new();
     for (fit_within, parent, display_row) in &mut q_child {
         let Ok(within) = q_parent.get(**parent) else {
@@ -519,9 +531,10 @@ fn fit_inside_matrix(
 }
 
 fn fit_inside_row(
-    q_parent: Query<&FitWithin, (With<DisplayRow>, Without<DisplayCell>, Changed<FitWithin>)>,
-    mut q_child: Query<(&mut FitWithin, &Parent, &DisplayCell)>,
+    q_parent: Query<&FitWithin, (With<DisplayRow>, Without<DisplayCell>)>,
+    mut q_child: Query<(&mut FitWithin, &Parent, &DisplayCell), With<NeedsFitting>>,
 ) {
+    info!("fitting cell inside row");
     let mut cell_map = HashMap::<Entity, _>::new();
     for (fit_within, parent, display_row) in &mut q_child {
         let Ok(within) = q_parent.get(**parent) else {
@@ -530,6 +543,7 @@ fn fit_inside_row(
         let (_, children) = cell_map.entry(**parent).or_insert_with(|| (within, vec![]));
         children.push((display_row, fit_within));
     }
+    info!("and our map={cell_map:#?}");
     for (within, mut children) in cell_map.into_values() {
         children.sort_by_key(|(cell, _)| cell.loc);
         let fit = within.rect;
@@ -550,16 +564,10 @@ fn fit_inside_row(
 }
 
 fn fit_inside_cell(
-    q_parent: Query<
-        &FitWithin,
-        (
-            With<DisplayCell>,
-            Without<DisplayCellButton>,
-            Changed<FitWithin>,
-        ),
-    >,
+    q_parent: Query<&FitWithin, (With<DisplayCell>, Without<DisplayCellButton>)>,
     mut q_child: Query<(&mut FitWithin, &Parent, &DisplayCellButton)>,
 ) {
+    info!("fitting buttons within cell");
     let mut cell_map = HashMap::<Entity, _>::new();
     for (fit_within, parent, display_row) in &mut q_child {
         let Ok(within) = q_parent.get(**parent) else {
@@ -585,61 +593,63 @@ fn fit_inside_cell(
 }
 
 fn fit_to_transform(
-    mut q_fit: Query<(Entity, &mut FitWithin, Option<&Parent>, &mut Transform), Changed<FitWithin>>,
+    ev: Trigger<OnRemove, NeedsFitting>,
+    mut q_fit: Query<(Entity, &mut FitWithin, &Parent, &mut Transform)>,
+    q_just_fit: Query<&FitWithin>,
     mut q_animation: Query<(&AnimationTarget, &mut RowMoveEdge)>,
     mut q_reader: Query<(&mut AnimationPlayer, &AnimationGraphHandle)>,
     mut animation_clips: ResMut<Assets<AnimationClip>>,
     mut animation_graphs: ResMut<Assets<AnimationGraph>>,
 ) {
-    let updates = q_fit
-        .iter()
-        .filter_map(|(entity, fit, parent, _)| {
-            let (_, parent_fit, _, _) = q_fit.get(**(parent?)).ok()?;
-            // TODO: unsure why this needs to be Y-reflected
-            let translate = (fit.rect.center() - parent_fit.rect.center()) * Vec2::new(1., -1.);
-            Some((entity, translate))
-        })
-        .collect::<Vec<_>>();
-    for (entity, translate) in updates {
-        let Ok((_, mut fit, _, mut transform)) = q_fit.get_mut(entity) else {
-            continue;
-        };
-        if !fit.updating {
-            continue;
-        }
-        fit.updating = false;
-        if let Ok((target, mut row_edge)) = q_animation.get_mut(entity) {
-            let translate = (translate, 0.).into();
-            let Ok((mut player, graph_handle)) = q_reader.get_mut(target.player) else {
-                continue;
-            };
-            let Some(graph) = animation_graphs.get_mut(graph_handle.id()) else {
-                continue;
-            };
+    let Ok((entity, mut fit, parent, mut transform)) = q_fit.get_mut(ev.entity()) else {
+        return;
+    };
+    let Ok(parent_fit) = q_just_fit.get(**parent) else {
+        return;
+    };
+    info!("fit to transform before={fit:?}");
+    fit.updated = false;
+    // TODO: unsure why this needs to be Y-reflected
+    let translate = (fit.rect.center() - parent_fit.rect.center()) * Vec2::new(1., -1.);
+    let animation_info = q_animation
+        .get_mut(entity)
+        .ok()
+        .and_then(|(target, row_edge)| {
+            let (player, graph_handle) = q_reader.get_mut(target.player).ok()?;
+            let graph = animation_graphs.get_mut(graph_handle.id())?;
+            Some((target, row_edge, player, graph))
+        });
+    if let Some((target, mut row_edge, mut player, graph)) = animation_info {
+        let translate = (translate, 0.).into();
 
-            let mut clip = AnimationClip::default();
-            clip.add_curve_to_target(
-                target.id,
-                AnimatableCurve::new(
-                    animated_field!(Transform::translation),
-                    EasingCurve::new(transform.translation, translate, EaseFunction::CubicOut)
-                        .reparametrize_linear(interval(0., 0.25).unwrap())
-                        .unwrap(),
-                ),
-            );
+        let mut clip = AnimationClip::default();
+        clip.add_curve_to_target(
+            target.id,
+            AnimatableCurve::new(
+                animated_field!(Transform::translation),
+                EasingCurve::new(transform.translation, translate, EaseFunction::CubicOut)
+                    .reparametrize_linear(interval(0., 0.25).unwrap())
+                    .unwrap(),
+            ),
+        );
 
-            if let Some(prev_node) = row_edge.0 {
-                graph.remove_edge(graph.root, prev_node);
-            }
-            let clip_handle = animation_clips.add(clip);
-            let node_index = graph.add_clip(clip_handle, 1., graph.root);
-            player.play(node_index);
-            row_edge.0 = Some(node_index);
-        } else {
-            transform.translation.x = translate.x;
-            transform.translation.y = translate.y;
+        if let Some(prev_node) = row_edge.0 {
+            graph.remove_edge(graph.root, prev_node);
         }
+        let clip_handle = animation_clips.add(clip);
+        let node_index = graph.add_clip(clip_handle, 1., graph.root);
+        player.play(node_index);
+        row_edge.0 = Some(node_index);
+    } else {
+        transform.translation.x = translate.x;
+        transform.translation.y = translate.y;
     }
+}
+
+fn update_fit(
+    mut q_fit: Query<(Entity, &mut FitWithin), Without<NeedsFitting>>,
+    mut commands: Commands,
+) {
 }
 
 fn mouse_over_fit(ev: Trigger<Pointer<Over>>, mut commands: Commands) {
