@@ -99,11 +99,15 @@ impl FromWorld for SeededRng {
 struct PuzzleCell {
     #[reflect(ignore)]
     enabled: FixedBitSet,
+    atlas_index: usize,
 }
 
 impl PuzzleCell {
-    fn new(enabled: FixedBitSet) -> Self {
-        PuzzleCell { enabled }
+    fn new(enabled: FixedBitSet, atlas_index: usize) -> Self {
+        PuzzleCell {
+            enabled,
+            atlas_index,
+        }
     }
 
     fn apply(&mut self, index: usize, op: UpdateCellIndexOperation) {
@@ -124,19 +128,45 @@ impl PuzzleCell {
 struct PuzzleRow {
     cells: Vec<PuzzleCell>,
     colors: Vec<Color>,
+    atlas: Handle<Image>,
+    atlas_layout: Handle<TextureAtlasLayout>,
 }
 
 impl PuzzleRow {
-    fn new(colors: Vec<Color>) -> Self {
-        let len = colors.len();
+    fn new_shuffled<R: Rng>(
+        rng: &mut R,
+        len: usize,
+        atlas: Handle<Image>,
+        atlas_layout: Handle<TextureAtlasLayout>,
+        atlas_len: usize,
+    ) -> Self {
+        let colors = random_colors(len, rng);
         let mut bitset = FixedBitSet::with_capacity(len);
         bitset.insert_range(..);
-        let cells = vec![PuzzleCell::new(bitset); len];
-        PuzzleRow { cells, colors }
+        let mut atlas_index_map = (0..atlas_len).collect::<Vec<_>>();
+        atlas_index_map.shuffle(rng);
+        let cells = atlas_index_map
+            .into_iter()
+            .take(len)
+            .map(|i| PuzzleCell::new(bitset.clone(), i))
+            .collect();
+        PuzzleRow {
+            cells,
+            colors,
+            atlas,
+            atlas_layout,
+        }
     }
 
     fn len(&self) -> usize {
         self.cells.len()
+    }
+
+    fn sprite_at(&self, index: usize) -> Sprite {
+        Sprite::from_atlas_image(self.atlas.clone(), TextureAtlas {
+            layout: self.atlas_layout.clone(),
+            index: self.cells[index].atlas_index,
+        })
     }
 }
 
@@ -398,7 +428,7 @@ fn assign_random_color(
 fn random_colors<R: Rng>(n_colors: usize, rng: &mut R) -> Vec<Color> {
     let n_samples = n_colors * 3;
     let saturation_dist = rand::distr::Uniform::new(0.5, 0.9).unwrap();
-    let lightness_dist = rand::distr::Uniform::new(0.2, 0.6).unwrap();
+    let lightness_dist = rand::distr::Uniform::new(0.2, 0.4).unwrap();
     let saturation = saturation_dist.sample(rng);
     let lightness = lightness_dist.sample(rng);
     let hue_width = 360. / n_samples as f32;
@@ -410,7 +440,7 @@ fn random_colors<R: Rng>(n_colors: usize, rng: &mut R) -> Vec<Color> {
     //     "saturation={saturation} lightntess={lightness} hue_width={hue_width} \
     //      hue_shift={hue_shift} hues={hues:?}"
     // );
-    hues.as_mut_slice().shuffle(rng);
+    hues.shuffle(rng);
     // info!("shuffled? hues={hues:?}");
     hues.into_iter()
         .take(n_colors)
@@ -425,14 +455,31 @@ fn add_row(
     mut puzzle: Single<&mut Puzzle>,
     matrix_entity: Single<(Entity, &FitWithin), With<DisplayMatrix>>,
     mut animation_graphs: ResMut<Assets<AnimationGraph>>,
+    asset_server: Res<AssetServer>,
+    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
+    let image = asset_server.load("foods.png");
+    let layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
+        UVec2::new(200, 200),
+        10,
+        1,
+        None,
+        None,
+    ));
     let (matrix, matrix_fit) = *matrix_entity;
     let mut spawned = false;
     for ev in reader.read() {
         let row_nr = puzzle.rows.len();
-        let colors = random_colors(ev.len, &mut rng.0);
+        // let colors = random_colors(ev.len, &mut rng.0);
         // info!("spawning row {:?}", colors);
-        puzzle.add_row(PuzzleRow::new(colors));
+        puzzle.add_row(PuzzleRow::new_shuffled(
+            &mut rng.0,
+            ev.len,
+            image.clone(),
+            layout.clone(),
+            10,
+        ));
+        let puzzle_row = &puzzle.rows[row_nr];
 
         commands.entity(matrix).with_children(|matrix_spawner| {
             matrix_spawner
@@ -459,12 +506,16 @@ fn add_row(
                                 DisplayCell { loc },
                             ))
                             .with_children(|cell_spawner| {
+                                let button_size = Vec2::new(32., 32.);
                                 for index in 0..ev.len {
+                                    let mut sprite = puzzle_row.sprite_at(index);
+                                    sprite.custom_size = Some(button_size - Vec2::new(5., 5.));
+                                    sprite.color = Color::hsla(0., 0., 1., 1.);
                                     cell_spawner
                                         .spawn((
                                             Sprite::from_color(
                                                 puzzle.rows[row_nr].colors[index],
-                                                Vec2::new(25., 25.),
+                                                button_size,
                                             ),
                                             FitWithinBundle::new(),
                                             DisplayCellButton {
@@ -473,8 +524,17 @@ fn add_row(
                                             HoverAnimationBundle::new(cell_player),
                                         ))
                                         .with_child((
-                                            Text2d::new(format!("{index}")),
+                                            sprite,
                                             Transform::from_xyz(0., 0., 1.),
+                                            PickingBehavior {
+                                                should_block_lower: false,
+                                                is_hoverable: false,
+                                            },
+                                            DisplayCellButton {
+                                                index: CellLocIndex { loc, index },
+                                            },
+                                            HoverAnimationBundle::new(cell_player),
+                                            // AssignRandomColor,
                                         ));
                                 }
                             });
