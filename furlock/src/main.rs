@@ -651,7 +651,7 @@ fn fit_to_transform(
             AnimatableCurve::new(
                 animated_field!(Transform::translation),
                 EasingCurve::new(transform.translation, translate, EaseFunction::CubicOut)
-                    .reparametrize_linear(interval(0., 0.25).unwrap())
+                    .reparametrize_linear(interval(0., 0.5).unwrap())
                     .unwrap(),
             ),
         );
@@ -976,7 +976,7 @@ fn setup(mut commands: Commands, mut animation_graphs: ResMut<Assets<AnimationGr
     commands.spawn(Camera2d);
     commands.spawn(<Puzzle as Default>::default());
     commands.insert_resource(PuzzleSpawn {
-        timer: Timer::new(Duration::from_secs_f32(0.25), TimerMode::Repeating),
+        timer: Timer::new(Duration::from_secs_f32(0.1), TimerMode::Repeating),
     });
     commands.spawn((
         DisplayMatrix,
