@@ -18,7 +18,11 @@ use bevy::{
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use fixedbitset::FixedBitSet;
 use petgraph::graph::NodeIndex;
-use rand::{distr::Distribution, seq::SliceRandom, Rng, SeedableRng};
+use rand::{
+    distr::Distribution,
+    seq::{IndexedRandom, SliceRandom},
+    Rng, SeedableRng,
+};
 use rand_chacha::ChaCha8Rng;
 use uuid::Uuid;
 
@@ -26,7 +30,7 @@ fn main() {
     App::new()
         .init_resource::<SeededRng>()
         .add_plugins(DefaultPlugins)
-        .add_plugins(WorldInspectorPlugin::new())
+        // .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddRow>()
         .add_event::<UpdateCellDisplay>()
         .add_event::<UpdateCellIndex>()
@@ -99,13 +103,15 @@ impl FromWorld for SeededRng {
 struct PuzzleCell {
     #[reflect(ignore)]
     enabled: FixedBitSet,
+    color: Color,
     atlas_index: usize,
 }
 
 impl PuzzleCell {
-    fn new(enabled: FixedBitSet, atlas_index: usize) -> Self {
+    fn new(enabled: FixedBitSet, color: Color, atlas_index: usize) -> Self {
         PuzzleCell {
             enabled,
+            color,
             atlas_index,
         }
     }
@@ -127,7 +133,6 @@ impl PuzzleCell {
 #[derive(Debug, Clone, Reflect)]
 struct PuzzleRow {
     cells: Vec<PuzzleCell>,
-    colors: Vec<Color>,
     atlas: Handle<Image>,
     atlas_layout: Handle<TextureAtlasLayout>,
 }
@@ -139,20 +144,23 @@ impl PuzzleRow {
         atlas: Handle<Image>,
         atlas_layout: Handle<TextureAtlasLayout>,
         atlas_len: usize,
+        shuffle_atlas: bool,
     ) -> Self {
         let colors = random_colors(len, rng);
         let mut bitset = FixedBitSet::with_capacity(len);
         bitset.insert_range(..);
         let mut atlas_index_map = (0..atlas_len).collect::<Vec<_>>();
-        atlas_index_map.shuffle(rng);
+        if shuffle_atlas {
+            atlas_index_map.shuffle(rng);
+        }
         let cells = atlas_index_map
             .into_iter()
             .take(len)
-            .map(|i| PuzzleCell::new(bitset.clone(), i))
+            .zip(colors)
+            .map(|(atlas_index, color)| PuzzleCell::new(bitset.clone(), color, atlas_index))
             .collect();
         PuzzleRow {
             cells,
-            colors,
             atlas,
             atlas_layout,
         }
@@ -396,11 +404,14 @@ fn spawn_row(
     time: Res<Time>,
     mut config: ResMut<PuzzleSpawn>,
     puzzle: Single<&Puzzle>,
+    mut rng: ResMut<SeededRng>,
 ) {
+    static LENGTH_SAMPLE: &[usize] = &[4, 5, 5, 5, 5, 6, 6, 7];
     config.timer.tick(time.delta());
     if config.timer.finished() {
         if puzzle.rows.len() < 4 {
-            writer.send(AddRow { len: 5 });
+            // let len = LENGTH_SAMPLE.choose(&mut rng.0).cloned().unwrap();
+            writer.send(AddRow { len: 4 });
         }
     }
 }
@@ -448,6 +459,59 @@ fn random_colors<R: Rng>(n_colors: usize, rng: &mut R) -> Vec<Color> {
         .collect()
 }
 
+struct Tileset {
+    asset_path: &'static str,
+    shuffle: bool,
+    tile_size: u32,
+    columns: u32,
+    rows: u32,
+}
+
+static TILESETS: [Tileset; 6] = [
+    Tileset {
+        asset_path: "foods.png",
+        shuffle: true,
+        tile_size: 200,
+        columns: 10,
+        rows: 1,
+    },
+    Tileset {
+        asset_path: "natures.png",
+        shuffle: true,
+        tile_size: 200,
+        columns: 10,
+        rows: 1,
+    },
+    Tileset {
+        asset_path: "tiles.png",
+        shuffle: true,
+        tile_size: 200,
+        columns: 6,
+        rows: 1,
+    },
+    Tileset {
+        asset_path: "weapons.png",
+        shuffle: true,
+        tile_size: 200,
+        columns: 7,
+        rows: 1,
+    },
+    Tileset {
+        asset_path: "armor.png",
+        shuffle: true,
+        tile_size: 200,
+        columns: 7,
+        rows: 1,
+    },
+    Tileset {
+        asset_path: "letters.png",
+        shuffle: false,
+        tile_size: 200,
+        columns: 6,
+        rows: 1,
+    },
+];
+
 fn add_row(
     mut commands: Commands,
     mut reader: EventReader<AddRow>,
@@ -458,17 +522,20 @@ fn add_row(
     asset_server: Res<AssetServer>,
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
-    let image = asset_server.load("foods.png");
-    let layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
-        UVec2::new(200, 200),
-        10,
-        1,
-        None,
-        None,
-    ));
     let (matrix, matrix_fit) = *matrix_entity;
     let mut spawned = false;
     for ev in reader.read() {
+        let tileset = TILESETS.choose(&mut rng.0).unwrap();
+        let image = asset_server.load(tileset.asset_path);
+        let layout = TextureAtlasLayout::from_grid(
+            UVec2::new(tileset.tile_size, tileset.tile_size),
+            tileset.columns,
+            tileset.rows,
+            None,
+            None,
+        );
+        let atlas_len = layout.len();
+        let layout_handle = texture_atlas_layouts.add(layout);
         let row_nr = puzzle.rows.len();
         // let colors = random_colors(ev.len, &mut rng.0);
         // info!("spawning row {:?}", colors);
@@ -476,8 +543,9 @@ fn add_row(
             &mut rng.0,
             ev.len,
             image.clone(),
-            layout.clone(),
-            10,
+            layout_handle.clone(),
+            atlas_len,
+            tileset.shuffle,
         ));
         let puzzle_row = &puzzle.rows[row_nr];
 
@@ -514,7 +582,7 @@ fn add_row(
                                     cell_spawner
                                         .spawn((
                                             Sprite::from_color(
-                                                puzzle.rows[row_nr].colors[index],
+                                                puzzle_row.cells[index].color,
                                                 button_size,
                                             ),
                                             FitWithinBundle::new(),
