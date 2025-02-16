@@ -44,7 +44,6 @@ fn main() {
         .register_type::<FitWithin>()
         .register_type::<HoverAlphaEdge>()
         .register_type::<HoverScaleEdge>()
-        .register_type::<NeedsFitting>()
         .register_type::<Puzzle>()
         .register_type::<PuzzleCell>()
         .register_type::<PuzzleRow>()
@@ -52,6 +51,9 @@ fn main() {
         .register_type::<UpdateCellIndexOperation>()
         .add_observer(cell_clicked_down)
         .add_observer(cell_continue_drag)
+        .add_observer(fit_inside_cell)
+        .add_observer(fit_inside_matrix)
+        .add_observer(fit_inside_row)
         .add_observer(fit_to_transform)
         .add_observer(interact_cell_generic::<OnAdd>(1.25))
         .add_observer(interact_cell_generic::<OnRemove>(1.0))
@@ -63,13 +65,12 @@ fn main() {
             Update,
             (
                 assign_random_color,
-                (
-                    fit_inside_window.run_if(any_with_component::<PrimaryWindow>),
-                    fit_inside_matrix,
-                    fit_inside_row,
-                    fit_inside_cell,
-                )
-                    .chain(),
+                // (
+                fit_inside_window.run_if(any_with_component::<PrimaryWindow>),
+                // fit_inside_row,
+                // fit_inside_cell,
+                // )
+                //     .chain(),
                 // (
                 //     mouse_inside_window.run_if(any_with_component::<PrimaryWindow>),
                 //     interact_cell,
@@ -160,33 +161,25 @@ impl Puzzle {
 #[derive(Reflect, Debug, Component, Default)]
 struct FitWithin {
     rect: Rect,
-    updated: bool,
 }
 
 impl FitWithin {
     fn new(rect: Rect) -> Self {
-        FitWithin {
-            rect,
-            updated: true,
-        }
+        FitWithin { rect }
     }
 
-    fn set_rect(&mut self, new_rect: Rect) {
+    fn refresh_rect(&self, commands: &mut Commands, me: Entity) {
+        // info!("refresh_rect: me={me:?} >{:?}", self.rect);
+        commands.entity(me).insert(FitWithin { rect: self.rect });
+    }
+
+    fn set_rect(&self, commands: &mut Commands, me: Entity, new_rect: Rect) {
         if self.rect != new_rect {
-            self.updated = true;
-        }
-        self.rect = new_rect;
-    }
-
-    fn flush_commands(&mut self, me: Entity, commands: &mut Commands) {
-        if self.updated {
-            commands.entity(me).insert(NeedsFitting);
+            // info!("set_rect: me={me:?} {:?} -> {:?}", self.rect, new_rect);
+            commands.entity(me).insert(FitWithin { rect: new_rect });
         }
     }
 }
-
-#[derive(Reflect, Debug, Component)]
-struct NeedsFitting;
 
 #[derive(Reflect, Debug, Component)]
 struct FitHover;
@@ -429,21 +422,24 @@ fn add_row(
     mut reader: EventReader<AddRow>,
     mut rng: ResMut<SeededRng>,
     mut puzzle: Single<&mut Puzzle>,
-    matrix: Single<Entity, With<DisplayMatrix>>,
+    matrix_entity: Single<(Entity, &FitWithin), With<DisplayMatrix>>,
     mut animation_graphs: ResMut<Assets<AnimationGraph>>,
 ) {
+    let (matrix, matrix_fit) = *matrix_entity;
+    let mut spawned = false;
     for ev in reader.read() {
         let row_nr = puzzle.rows.len();
         let colors = random_colors(ev.len, &mut rng.0);
+        // info!("spawning row {:?}", colors);
         puzzle.add_row(PuzzleRow::new(colors));
 
-        commands.entity(*matrix).with_children(|matrix_spawner| {
+        commands.entity(matrix).with_children(|matrix_spawner| {
             matrix_spawner
                 .spawn((
                     FitWithinBundle::new(),
                     // RandomColorSprite::new(),
                     DisplayRow { row_nr },
-                    RowAnimationBundle::new(*matrix),
+                    RowAnimationBundle::new(matrix),
                 ))
                 .with_children(|row_spawner| {
                     for cell_nr in 0..ev.len {
@@ -484,131 +480,158 @@ fn add_row(
                     }
                 });
         });
+
+        spawned = true;
+    }
+
+    if spawned {
+        matrix_fit.refresh_rect(&mut commands, matrix);
     }
 }
 
 fn fit_inside_window(
-    q_camera: Single<&Camera>,
-    mut q_fit_root: Query<&mut FitWithin, Without<Parent>>,
+    q_camera: Query<(Entity, &Camera)>,
+    q_fit_root: Query<(Entity, &FitWithin), Without<Parent>>,
+    mut commands: Commands,
 ) {
-    let Some(logical_viewport) = q_camera.logical_viewport_rect() else {
+    let (camera_entity, camera) = q_camera.single();
+    let Some(logical_viewport) = camera.logical_viewport_rect() else {
         return;
     };
-    for mut fit_within in &mut q_fit_root {
-        info!("fit_within before={:?}", fit_within);
-        fit_within.set_rect(logical_viewport.inflate(-50.));
-        info!("fit_within after={:?}", fit_within);
+    let window_size = logical_viewport.inflate(-50.);
+    // info!("ensuring window fit of window({:?}) {:?} {:?}", window_size, camera_entity, camera);
+    for (entity, fit_within) in &q_fit_root {
+        fit_within.set_rect(&mut commands, entity, window_size);
     }
 }
 
 fn fit_inside_matrix(
-    q_parent: Query<&FitWithin, (With<DisplayMatrix>, Without<DisplayRow>)>,
-    mut q_child: Query<(&mut FitWithin, &Parent, &DisplayRow), With<NeedsFitting>>,
+    ev: Trigger<OnInsert, (FitWithin, DisplayMatrix)>,
+    q_about_target: Query<(&FitWithin, &Children), (With<DisplayMatrix>, Without<DisplayRow>)>,
+    q_children: Query<(Entity, &FitWithin, &DisplayRow)>,
+    mut commands: Commands,
 ) {
-    info!("fitting row inside matrix");
-    let mut row_map = HashMap::<Entity, _>::new();
-    for (fit_within, parent, display_row) in &mut q_child {
-        let Ok(within) = q_parent.get(**parent) else {
-            unreachable!()
-        };
-        let (_, children) = row_map.entry(**parent).or_insert_with(|| (within, vec![]));
-        children.push((display_row, fit_within));
-    }
-    for (within, mut children) in row_map.into_values() {
-        children.sort_by_key(|(row, _)| row.row_nr);
-        let fit = within.rect;
-        let fit_height = fit.height();
-        let row_height = fit_height / children.len() as f32;
-        let mut current_y = fit.max.y;
-        for (_, mut fit_within) in children {
-            let new_y = current_y - row_height;
-            let row_rect =
-                Rect::from_corners(Vec2::new(fit.min.x, current_y), Vec2::new(fit.max.x, new_y));
-            fit_within.set_rect(row_rect);
-            current_y = new_y;
-        }
+    // info!("testing matrix fit of {:?}", ev.entity());
+    let Ok((within, children)) = q_about_target.get(ev.entity()) else {
+        return;
+    };
+    // info!(
+    //     " + fitting row inside matrix {:?} {:?}",
+    //     within,
+    //     children.len()
+    // );
+    let children = {
+        let mut children = children
+            .iter()
+            .filter_map(|e| q_children.get(*e).ok())
+            .collect::<Vec<_>>();
+        children.sort_by_key(|(_, _, row)| row.row_nr);
+        children
+    };
+    let fit = within.rect;
+    let fit_height = fit.height();
+    let row_height = fit_height / children.len() as f32;
+    let mut current_y = fit.max.y;
+    for (entity, fit_within, _) in children {
+        let new_y = current_y - row_height;
+        let row_rect =
+            Rect::from_corners(Vec2::new(fit.min.x, current_y), Vec2::new(fit.max.x, new_y));
+        fit_within.set_rect(&mut commands, entity, row_rect);
+        current_y = new_y;
     }
 }
 
 fn fit_inside_row(
-    q_parent: Query<&FitWithin, (With<DisplayRow>, Without<DisplayCell>)>,
-    mut q_child: Query<(&mut FitWithin, &Parent, &DisplayCell), With<NeedsFitting>>,
+    ev: Trigger<OnInsert, (FitWithin, DisplayRow)>,
+    q_about_target: Query<(&FitWithin, &Children), (With<DisplayRow>, Without<DisplayCell>)>,
+    q_children: Query<(Entity, &FitWithin, &DisplayCell)>,
+    mut commands: Commands,
 ) {
-    info!("fitting cell inside row");
-    let mut cell_map = HashMap::<Entity, _>::new();
-    for (fit_within, parent, display_row) in &mut q_child {
-        let Ok(within) = q_parent.get(**parent) else {
-            unreachable!()
-        };
-        let (_, children) = cell_map.entry(**parent).or_insert_with(|| (within, vec![]));
-        children.push((display_row, fit_within));
-    }
-    info!("and our map={cell_map:#?}");
-    for (within, mut children) in cell_map.into_values() {
-        children.sort_by_key(|(cell, _)| cell.loc);
-        let fit = within.rect;
-        let fit_width = fit.width();
-        let prospective_cell_width = fit_width / children.len() as f32;
-        let cell_spacing = prospective_cell_width * 0.15;
-        let total_cell_spacing = cell_spacing * (children.len() - 1) as f32;
-        let cell_width = (fit_width - total_cell_spacing) / children.len() as f32;
-        let mut current_x = fit.min.x;
-        for (_, mut fit_within) in children {
-            let new_x = current_x + cell_width;
-            let cell_rect =
-                Rect::from_corners(Vec2::new(current_x, fit.min.y), Vec2::new(new_x, fit.max.y));
-            fit_within.set_rect(cell_rect);
-            current_x = new_x + cell_spacing;
-        }
+    // info!("testing matrix row fit of {:?}", ev.entity());
+    let Ok((within, children)) = q_about_target.get(ev.entity()) else {
+        return;
+    };
+    // info!(
+    //     " + fitting row inside matrix {:?} {:?}",
+    //     within,
+    //     children.len()
+    // );
+    let children = {
+        let mut children = children
+            .iter()
+            .filter_map(|e| q_children.get(*e).ok())
+            .collect::<Vec<_>>();
+        children.sort_by_key(|(_, _, cell)| cell.loc);
+        children
+    };
+    let fit = within.rect;
+    let fit_width = fit.width();
+    let prospective_cell_width = fit_width / children.len() as f32;
+    let cell_spacing = prospective_cell_width * 0.15;
+    let total_cell_spacing = cell_spacing * (children.len() - 1) as f32;
+    let cell_width = (fit_width - total_cell_spacing) / children.len() as f32;
+    let mut current_x = fit.min.x;
+    for (entity, fit_within, _) in children {
+        let new_x = current_x + cell_width;
+        let cell_rect =
+            Rect::from_corners(Vec2::new(current_x, fit.min.y), Vec2::new(new_x, fit.max.y));
+        fit_within.set_rect(&mut commands, entity, cell_rect);
+        current_x = new_x + cell_spacing;
     }
 }
 
 fn fit_inside_cell(
-    q_parent: Query<&FitWithin, (With<DisplayCell>, Without<DisplayCellButton>)>,
-    mut q_child: Query<(&mut FitWithin, &Parent, &DisplayCellButton)>,
+    ev: Trigger<OnInsert, (FitWithin, DisplayCell)>,
+    q_about_target: Query<(&FitWithin, &Children), (With<DisplayCell>, Without<DisplayCellButton>)>,
+    q_children: Query<(Entity, &FitWithin, &DisplayCellButton)>,
+    mut commands: Commands,
 ) {
-    info!("fitting buttons within cell");
-    let mut cell_map = HashMap::<Entity, _>::new();
-    for (fit_within, parent, display_row) in &mut q_child {
-        let Ok(within) = q_parent.get(**parent) else {
-            unreachable!()
-        };
-        let (_, children) = cell_map.entry(**parent).or_insert_with(|| (within, vec![]));
-        children.push((display_row, fit_within));
-    }
-    for (within, mut children) in cell_map.into_values() {
-        children.sort_by_key(|(cell, _)| cell.index);
-        let fit = within.rect;
-        let fit_width = fit.width();
-        let cell_width = fit_width / children.len() as f32;
-        let mut current_x = fit.min.x;
-        for (_, mut fit_within) in children {
-            let new_x = current_x + cell_width;
-            let cell_rect =
-                Rect::from_corners(Vec2::new(current_x, fit.min.y), Vec2::new(new_x, fit.max.y));
-            fit_within.set_rect(cell_rect);
-            current_x = new_x;
-        }
+    // info!("testing matrix cell fit of {:?}", ev.entity());
+    let Ok((within, children)) = q_about_target.get(ev.entity()) else {
+        return;
+    };
+    // info!(
+    //     " + fitting button inside cell {:?} {:?}",
+    //     within,
+    //     children.len()
+    // );
+    let children = {
+        let mut children = children
+            .iter()
+            .filter_map(|e| q_children.get(*e).ok())
+            .collect::<Vec<_>>();
+        children.sort_by_key(|(_, _, button)| button.index);
+        children
+    };
+    let fit = within.rect;
+    let fit_width = fit.width();
+    let button_width = fit_width / children.len() as f32;
+    let mut current_x = fit.min.x;
+    for (entity, fit_within, _) in children {
+        let new_x = current_x + button_width;
+        let button_rect =
+            Rect::from_corners(Vec2::new(current_x, fit.min.y), Vec2::new(new_x, fit.max.y));
+        fit_within.set_rect(&mut commands, entity, button_rect);
+        current_x = new_x;
     }
 }
 
 fn fit_to_transform(
-    ev: Trigger<OnRemove, NeedsFitting>,
-    mut q_fit: Query<(Entity, &mut FitWithin, &Parent, &mut Transform)>,
+    ev: Trigger<OnInsert, FitWithin>,
+    mut q_fit: Query<(Entity, &FitWithin, &Parent, &mut Transform)>,
     q_just_fit: Query<&FitWithin>,
     mut q_animation: Query<(&AnimationTarget, &mut RowMoveEdge)>,
     mut q_reader: Query<(&mut AnimationPlayer, &AnimationGraphHandle)>,
     mut animation_clips: ResMut<Assets<AnimationClip>>,
     mut animation_graphs: ResMut<Assets<AnimationGraph>>,
 ) {
-    let Ok((entity, mut fit, parent, mut transform)) = q_fit.get_mut(ev.entity()) else {
+    let Ok((entity, fit, parent, mut transform)) = q_fit.get_mut(ev.entity()) else {
         return;
     };
     let Ok(parent_fit) = q_just_fit.get(**parent) else {
         return;
     };
-    info!("fit to transform before={fit:?}");
-    fit.updated = false;
+    // info!("fit to transform before={fit:?}");
     // TODO: unsure why this needs to be Y-reflected
     let translate = (fit.rect.center() - parent_fit.rect.center()) * Vec2::new(1., -1.);
     let animation_info = q_animation
@@ -644,12 +667,6 @@ fn fit_to_transform(
         transform.translation.x = translate.x;
         transform.translation.y = translate.y;
     }
-}
-
-fn update_fit(
-    mut q_fit: Query<(Entity, &mut FitWithin), Without<NeedsFitting>>,
-    mut commands: Commands,
-) {
 }
 
 fn mouse_over_fit(ev: Trigger<Pointer<Over>>, mut commands: Commands) {
