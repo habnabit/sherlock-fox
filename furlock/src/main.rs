@@ -44,6 +44,7 @@ fn main() {
         .register_type::<FitWithin>()
         .register_type::<HoverAlphaEdge>()
         .register_type::<HoverScaleEdge>()
+        .register_type::<RowMoveEdge>()
         .register_type::<Puzzle>()
         .register_type::<PuzzleCell>()
         .register_type::<PuzzleRow>()
