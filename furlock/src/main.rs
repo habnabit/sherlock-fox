@@ -4,6 +4,9 @@
 
 #![feature(try_blocks)]
 
+mod clues;
+mod puzzle;
+
 use std::{any::TypeId, time::Duration};
 
 use bevy::{
@@ -18,8 +21,12 @@ use bevy::{
     window::PrimaryWindow,
 };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
-use fixedbitset::FixedBitSet;
+use clues::{AdjacentColumnClue, BetweenColumnsClue, DynPuzzleClue, PuzzleClues, SameColumnClue};
 use petgraph::graph::NodeIndex;
+use puzzle::{
+    CellLoc, CellLocIndex, Puzzle, PuzzleCellDisplay, PuzzleCellSelection, PuzzleRow,
+    UpdateCellIndexOperation,
+};
 use rand::{
     distr::Distribution,
     seq::{IndexedRandom, SliceRandom},
@@ -121,188 +128,6 @@ impl FromWorld for SeededRng {
     }
 }
 
-#[derive(Debug, Clone, Reflect)]
-struct PuzzleCellSelection {
-    #[reflect(ignore)]
-    enabled: FixedBitSet,
-}
-
-impl PuzzleCellSelection {
-    fn new(enabled: FixedBitSet) -> Self {
-        PuzzleCellSelection { enabled }
-    }
-
-    fn apply(&mut self, index: usize, op: UpdateCellIndexOperation) {
-        use UpdateCellIndexOperation::*;
-        match op {
-            Clear => self.enabled.remove(index),
-            Set => self.enabled.insert(index),
-            Toggle => self.enabled.toggle(index),
-            Solo => {
-                self.enabled.remove_range(..);
-                self.enabled.insert(index);
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Reflect)]
-struct PuzzleCellDisplay {
-    atlas_index: usize,
-    color: Color,
-}
-
-#[derive(Debug, Clone, Reflect)]
-struct PuzzleRow {
-    cell_selection: Vec<PuzzleCellSelection>,
-    cell_display: Vec<PuzzleCellDisplay>,
-    cell_answers: Vec<usize>,
-    atlas: Handle<Image>,
-    atlas_layout: Handle<TextureAtlasLayout>,
-}
-
-impl PuzzleRow {
-    fn new_shuffled<R: Rng>(
-        rng: &mut R,
-        len: usize,
-        atlas: Handle<Image>,
-        atlas_layout: Handle<TextureAtlasLayout>,
-        atlas_len: usize,
-        shuffle_atlas: bool,
-    ) -> Self {
-        let colors = random_colors(len, rng);
-        let mut cell_answers = (0..len).collect::<Vec<_>>();
-        cell_answers.shuffle(rng);
-        let mut bitset = FixedBitSet::with_capacity(len);
-        bitset.insert_range(..);
-        let mut atlas_index_map = (0..atlas_len).collect::<Vec<_>>();
-        if shuffle_atlas {
-            atlas_index_map.shuffle(rng);
-        }
-        let cell_display = atlas_index_map
-            .into_iter()
-            .take(len)
-            .zip(colors)
-            .map(|(atlas_index, color)| PuzzleCellDisplay { atlas_index, color })
-            .collect();
-        let cell_selection = (0..len)
-            .map(|_| PuzzleCellSelection::new(bitset.clone()))
-            .collect();
-        PuzzleRow {
-            cell_selection,
-            cell_display,
-            cell_answers,
-            atlas,
-            atlas_layout,
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.cell_selection.len()
-    }
-
-    fn display_sprite_at(&self, index: usize) -> Sprite {
-        Sprite::from_atlas_image(self.atlas.clone(), TextureAtlas {
-            layout: self.atlas_layout.clone(),
-            index: self.cell_display[index].atlas_index,
-        })
-    }
-
-    fn display_color_at(&self, index: usize) -> Color {
-        self.cell_display[index].color
-    }
-
-    fn answer_sprite_at(&self, index: usize) -> Sprite {
-        self.display_sprite_at(self.cell_answers[index])
-    }
-
-    fn answer_color_at(&self, index: usize) -> Color {
-        self.display_color_at(self.cell_answers[index])
-    }
-}
-
-#[derive(Debug, Component, Default, Reflect)]
-struct Puzzle {
-    rows: Vec<PuzzleRow>,
-    max_column: usize,
-}
-
-impl Puzzle {
-    fn add_row(&mut self, row: PuzzleRow) {
-        self.max_column = self.max_column.max(row.len());
-        self.rows.push(row);
-    }
-
-    fn cell(&self, loc: CellLoc) -> &PuzzleCellSelection {
-        &self.rows[loc.row_nr].cell_selection[loc.cell_nr]
-    }
-
-    fn cell_mut(&mut self, loc: CellLoc) -> &mut PuzzleCellSelection {
-        &mut self.rows[loc.row_nr].cell_selection[loc.cell_nr]
-    }
-
-    fn cell_display_at(&self, loc: CellLoc) -> (Sprite, Color) {
-        let row = &self.rows[loc.row_nr];
-        (
-            row.display_sprite_at(loc.cell_nr),
-            row.display_color_at(loc.cell_nr),
-        )
-    }
-
-    fn cell_answer_at(&self, loc: CellLoc) -> (Sprite, Color) {
-        let row = &self.rows[loc.row_nr];
-        (
-            row.answer_sprite_at(loc.cell_nr),
-            row.answer_color_at(loc.cell_nr),
-        )
-    }
-}
-
-trait PuzzleClue: std::fmt::Debug {
-    fn advance_puzzle(&self, puzzle: &Puzzle);
-    fn display(&self);
-    fn spawn_into<'s, 'p: 's>(
-        &'s self,
-        puzzle: &'p Puzzle,
-    ) -> Box<dyn FnOnce(&mut ChildBuilder) + 's>;
-}
-
-#[derive(Reflect, Asset, Debug)]
-#[reflect(from_reflect = false)]
-struct DynPuzzleClue(#[reflect(ignore)] Box<(dyn PuzzleClue + Sync + Send + 'static)>);
-
-// impl std::fmt::Debug for DynPuzzleClue {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         f.debug_tuple("DynPuzzleClue").finish()
-//     }
-// }
-
-impl FromReflect for DynPuzzleClue {
-    fn from_reflect(reflect: &dyn PartialReflect) -> Option<Self> {
-        todo!()
-    }
-}
-
-impl std::ops::Deref for DynPuzzleClue {
-    type Target = dyn PuzzleClue;
-
-    fn deref(&self) -> &Self::Target {
-        &*self.0
-    }
-}
-
-impl<C: PuzzleClue + Sync + Send + 'static> From<C> for DynPuzzleClue {
-    fn from(value: C) -> Self {
-        Self::new(value)
-    }
-}
-
-impl DynPuzzleClue {
-    fn new(clue: impl PuzzleClue + Sync + Send + 'static) -> Self {
-        DynPuzzleClue(Box::new(clue))
-    }
-}
-
 #[derive(Debug, Component, Reflect)]
 struct PuzzleClueComponent(Handle<DynPuzzleClue>);
 
@@ -323,287 +148,7 @@ fn show_dyn_clue(
     info!("dyn clue ev={ev:?} clue={clue:?}");
     commands
         .entity(ev.entity())
-        .with_children(clue.0.spawn_into(puzzle));
-}
-
-#[derive(Debug, Component, Default, Reflect)]
-struct PuzzleClues {
-    clues: Vec<Handle<DynPuzzleClue>>,
-}
-
-#[derive(Debug, Component, Clone, Reflect)]
-struct SameColumnClue {
-    loc: CellLoc,
-    row2: usize,
-    row3: Option<usize>,
-}
-
-impl SameColumnClue {
-    fn new_random<R: Rng>(rng: &mut R, puzzle: &Puzzle) -> Option<Self> {
-        let n_rows = puzzle.rows.len();
-        let mut rows = rand::seq::index::sample(rng, n_rows, n_rows).into_iter();
-        let first_row = rows.next()?;
-        let cell_nr = rng.random_range(0..puzzle.max_column);
-        let loc = CellLoc {
-            row_nr: first_row,
-            cell_nr,
-        };
-        let row2 = rows.next()?;
-        let row3 = if rng.random_ratio(1, 3) {
-            rows.next()
-        } else {
-            None
-        };
-        Some(SameColumnClue { loc, row2, row3 })
-    }
-}
-
-impl PuzzleClue for SameColumnClue {
-    fn advance_puzzle(&self, puzzle: &Puzzle) {
-        todo!()
-    }
-
-    fn display(&self) {
-        todo!()
-    }
-
-    fn spawn_into<'s, 'p: 's>(
-        &'s self,
-        puzzle: &'p Puzzle,
-    ) -> Box<dyn FnOnce(&mut ChildBuilder) + 's> {
-        Box::new(|builder| {
-            let sprite_size = Vec2::new(32., 32.);
-            let size_sprite = |mut sprite: Sprite| {
-                sprite.custom_size = Some(sprite_size);
-                sprite
-            };
-            let (sprite1, color1) = puzzle.cell_answer_at(self.loc);
-            builder
-                .spawn((
-                    Sprite::from_color(color1, sprite_size),
-                    Transform::from_xyz(0., -32., 0.),
-                ))
-                .with_child((
-                    size_sprite(sprite1),
-                    Transform::from_xyz(0., 0., 1.),
-                    PickingBehavior {
-                        should_block_lower: false,
-                        is_hoverable: false,
-                    },
-                ));
-            let (sprite2, color2) = puzzle.cell_answer_at(CellLoc {
-                row_nr: self.row2,
-                ..self.loc
-            });
-            builder
-                .spawn((
-                    Sprite::from_color(color2, sprite_size),
-                    Transform::from_xyz(0., 0., 0.),
-                ))
-                .with_child((
-                    size_sprite(sprite2),
-                    Transform::from_xyz(0., 0., 1.),
-                    PickingBehavior {
-                        should_block_lower: false,
-                        is_hoverable: false,
-                    },
-                ));
-            if let Some(row3) = self.row3 {
-                let (sprite3, color3) = puzzle.cell_answer_at(CellLoc {
-                    row_nr: row3,
-                    ..self.loc
-                });
-                builder
-                    .spawn((
-                        Sprite::from_color(color3, sprite_size),
-                        Transform::from_xyz(0., 32., 0.),
-                    ))
-                    .with_child((
-                        size_sprite(sprite3),
-                        Transform::from_xyz(0., 0., 1.),
-                        PickingBehavior {
-                            should_block_lower: false,
-                            is_hoverable: false,
-                        },
-                    ));
-            }
-        })
-    }
-}
-
-#[derive(Debug, Component, Clone, Reflect)]
-struct AdjacentColumnClue {
-    loc1: CellLoc,
-    loc2: CellLoc,
-}
-
-impl AdjacentColumnClue {
-    fn new_random<R: Rng>(rng: &mut R, puzzle: &Puzzle) -> Option<Self> {
-        let n_rows = puzzle.rows.len();
-        let [col1, col2] = rand::seq::index::sample_array(rng, puzzle.max_column)?;
-        Some(AdjacentColumnClue {
-            loc1: CellLoc {
-                row_nr: rng.random_range(0..n_rows),
-                cell_nr: col1,
-            },
-            loc2: CellLoc {
-                row_nr: rng.random_range(0..n_rows),
-                cell_nr: col2,
-            },
-        })
-    }
-}
-
-impl PuzzleClue for AdjacentColumnClue {
-    fn advance_puzzle(&self, puzzle: &Puzzle) {
-        todo!()
-    }
-
-    fn display(&self) {
-        todo!()
-    }
-
-    fn spawn_into<'s, 'p: 's>(
-        &'s self,
-        puzzle: &'p Puzzle,
-    ) -> Box<dyn FnOnce(&mut ChildBuilder) + 's> {
-        Box::new(|builder| {
-            let sprite_size = Vec2::new(32., 32.);
-            let size_sprite = |mut sprite: Sprite| {
-                sprite.custom_size = Some(sprite_size);
-                sprite
-            };
-            let colspan = self
-                .loc1
-                .cell_nr
-                .abs_diff(self.loc2.cell_nr)
-                .saturating_sub(1);
-            builder.spawn(Text2d::new(format!("{colspan}")));
-            let (sprite1, color1) = puzzle.cell_answer_at(self.loc1);
-            builder
-                .spawn((
-                    Sprite::from_color(color1, sprite_size),
-                    Transform::from_xyz(-25., 0., 0.),
-                ))
-                .with_child((
-                    size_sprite(sprite1),
-                    Transform::from_xyz(0., 0., 1.),
-                    PickingBehavior {
-                        should_block_lower: false,
-                        is_hoverable: false,
-                    },
-                ));
-            let (sprite2, color2) = puzzle.cell_answer_at(self.loc2);
-            builder
-                .spawn((
-                    Sprite::from_color(color2, sprite_size),
-                    Transform::from_xyz(25., 0., 0.),
-                ))
-                .with_child((
-                    size_sprite(sprite2),
-                    Transform::from_xyz(0., 0., 1.),
-                    PickingBehavior {
-                        should_block_lower: false,
-                        is_hoverable: false,
-                    },
-                ));
-        })
-    }
-}
-
-#[derive(Debug, Component, Clone, Reflect)]
-struct BetweenColumnsClue {
-    loc1: CellLoc,
-    loc2: CellLoc,
-    loc3: CellLoc,
-}
-
-impl BetweenColumnsClue {
-    fn new_random<R: Rng>(rng: &mut R, puzzle: &Puzzle) -> Option<Self> {
-        let n_rows = puzzle.rows.len();
-        let mut columns: [usize; 3] = rand::seq::index::sample_array(rng, puzzle.max_column)?;
-        columns.sort();
-        let [col1, col2, col3] = columns;
-        Some(BetweenColumnsClue {
-            loc1: CellLoc {
-                row_nr: rng.random_range(0..n_rows),
-                cell_nr: col1,
-            },
-            loc2: CellLoc {
-                row_nr: rng.random_range(0..n_rows),
-                cell_nr: col2,
-            },
-            loc3: CellLoc {
-                row_nr: rng.random_range(0..n_rows),
-                cell_nr: col3,
-            },
-        })
-    }
-}
-
-impl PuzzleClue for BetweenColumnsClue {
-    fn advance_puzzle(&self, puzzle: &Puzzle) {
-        todo!()
-    }
-
-    fn display(&self) {
-        todo!()
-    }
-
-    fn spawn_into<'s, 'p: 's>(
-        &'s self,
-        puzzle: &'p Puzzle,
-    ) -> Box<dyn FnOnce(&mut ChildBuilder) + 's> {
-        Box::new(|builder| {
-            let sprite_size = Vec2::new(32., 32.);
-            let size_sprite = |mut sprite: Sprite| {
-                sprite.custom_size = Some(sprite_size);
-                sprite
-            };
-            let (sprite1, color1) = puzzle.cell_answer_at(self.loc1);
-            builder
-                .spawn((
-                    Sprite::from_color(color1, sprite_size),
-                    Transform::from_xyz(-32., 0., 0.),
-                ))
-                .with_child((
-                    size_sprite(sprite1),
-                    Transform::from_xyz(0., 0., 1.),
-                    PickingBehavior {
-                        should_block_lower: false,
-                        is_hoverable: false,
-                    },
-                ));
-            let (sprite2, color2) = puzzle.cell_answer_at(self.loc2);
-            builder
-                .spawn((
-                    Sprite::from_color(color2, sprite_size),
-                    Transform::from_xyz(0., 0., -1.),
-                ))
-                .with_child((
-                    size_sprite(sprite2),
-                    Transform::from_xyz(0., 0., 1.),
-                    PickingBehavior {
-                        should_block_lower: false,
-                        is_hoverable: false,
-                    },
-                ));
-            let (sprite3, color3) = puzzle.cell_answer_at(self.loc3);
-            builder
-                .spawn((
-                    Sprite::from_color(color3, sprite_size),
-                    Transform::from_xyz(32., 0., 0.),
-                ))
-                .with_child((
-                    size_sprite(sprite3),
-                    Transform::from_xyz(0., 0., 1.),
-                    PickingBehavior {
-                        should_block_lower: false,
-                        is_hoverable: false,
-                    },
-                ));
-        })
-    }
+        .with_children(clue.spawn_into(puzzle));
 }
 
 #[derive(Reflect, Debug, Component, Default)]
@@ -734,18 +279,6 @@ struct DisplayRow {
     row_nr: usize,
 }
 
-#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct CellLoc {
-    row_nr: usize,
-    cell_nr: usize,
-}
-
-#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct CellLocIndex {
-    loc: CellLoc,
-    index: usize,
-}
-
 #[derive(Reflect, Debug, Component)]
 struct DisplayCell {
     loc: CellLoc,
@@ -816,14 +349,6 @@ impl DragTarget {
     }
 }
 
-#[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq)]
-enum UpdateCellIndexOperation {
-    Clear,
-    Set,
-    Toggle,
-    Solo,
-}
-
 fn spawn_row(
     mut new_row_writer: EventWriter<AddRow>,
     mut new_clue_writer: EventWriter<AddClue>,
@@ -846,7 +371,7 @@ fn spawn_row(
                 let row_nr = rng.0.random_range(0..puzzle.rows.len());
                 let cell_nr = rng.0.random_range(0..puzzle.max_column);
                 let loc = CellLoc { row_nr, cell_nr };
-                let index = puzzle.rows[row_nr].cell_answers[cell_nr];
+                let index = puzzle.cell_answer_index(loc);
                 update_cell_writer.send(UpdateCellIndex {
                     index: CellLocIndex { loc, index },
                     op: UpdateCellIndexOperation::Solo,
@@ -1029,13 +554,13 @@ fn add_row(
                             .with_children(|cell_spawner| {
                                 let button_size = Vec2::new(32., 32.);
                                 for index in 0..ev.len {
-                                    let mut sprite = puzzle_row.display_sprite_at(index);
+                                    let mut sprite = puzzle_row.display_sprite(index);
                                     sprite.custom_size = Some(button_size - Vec2::new(5., 5.));
                                     sprite.color = Color::hsla(0., 0., 1., 1.);
                                     cell_spawner
                                         .spawn((
                                             Sprite::from_color(
-                                                puzzle_row.display_color_at(index),
+                                                puzzle_row.display_color(index),
                                                 button_size,
                                             ),
                                             FitWithinBundle::new(),
@@ -1537,7 +1062,7 @@ fn cell_update(
     mut writer: EventWriter<UpdateCellDisplay>,
 ) {
     for &UpdateCellIndex { index, op } in reader.read() {
-        let puzzle_cell = puzzle.cell_mut(index.loc);
+        let puzzle_cell = puzzle.cell_selection_mut(index.loc);
         puzzle_cell.apply(index.index, op);
         writer.send(UpdateCellDisplay { loc: index.loc });
     }
@@ -1595,7 +1120,7 @@ fn cell_update_display(
             .push((index, sprite, target, hover_edge));
     }
     for &UpdateCellDisplay { loc } in reader.read() {
-        let cell = puzzle.cell(loc);
+        let cell = puzzle.cell_selection(loc);
         let Some(buttons) = entity_map.get_mut(&loc) else {
             unreachable!()
         };
