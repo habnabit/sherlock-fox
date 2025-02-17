@@ -1,10 +1,15 @@
 use bevy::prelude::*;
 use rand::Rng;
 
-use crate::puzzle::{CellLoc, Puzzle};
+use crate::{
+    puzzle::{CellLoc, CellLocIndex, Puzzle, UpdateCellIndexOperation},
+    UpdateCellIndex,
+};
+
+pub type PuzzleAdvance = Option<UpdateCellIndex>;
 
 pub trait PuzzleClue: std::fmt::Debug {
-    fn advance_puzzle(&self, puzzle: &Puzzle);
+    fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance;
     fn display(&self);
     fn spawn_into<'s, 'p: 's>(
         &'s self,
@@ -71,18 +76,62 @@ impl SameColumnClue {
             cell_nr,
         };
         let row2 = rows.next()?;
-        let row3 = if rng.random_ratio(1, 3) {
+        let row3 = if false && rng.random_ratio(1, 3) {
             rows.next()
         } else {
             None
         };
         Some(SameColumnClue { loc, row2, row3 })
     }
+
+    fn loc2(&self) -> CellLoc {
+        CellLoc {
+            row_nr: self.row2,
+            ..self.loc
+        }
+    }
+
+    fn loc3(&self) -> Option<CellLoc> {
+        try {
+            CellLoc {
+                row_nr: self.row3?,
+                ..self.loc
+            }
+        }
+    }
 }
 
 impl PuzzleClue for SameColumnClue {
-    fn advance_puzzle(&self, puzzle: &Puzzle) {
-        todo!()
+    fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance {
+        let answer1 = puzzle.cell_answer_index(self.loc);
+        let loc2 = self.loc2();
+        let answer2 = puzzle.cell_answer_index(loc2);
+        for cell_nr in 0..puzzle.max_column {
+            let this_loc1 = CellLoc { cell_nr, ..self.loc };
+            let this_selection1 = puzzle.cell_selection(this_loc1);
+            let has1 = this_selection1.enabled.contains(answer1);
+            let this_loc2 = CellLoc { cell_nr, ..loc2 };
+            let this_selection2 = puzzle.cell_selection(this_loc2);
+            let has2 = this_selection2.enabled.contains(answer2);
+            if has1 && !has2 {
+                return Some(UpdateCellIndex {
+                    index: CellLocIndex {
+                        loc: this_loc1,
+                        index: answer1,
+                    },
+                    op: UpdateCellIndexOperation::Clear
+                });
+            } else if has2 && !has1 {
+                return Some(UpdateCellIndex {
+                    index: CellLocIndex {
+                        loc: this_loc2,
+                        index: answer2,
+                    },
+                    op: UpdateCellIndexOperation::Clear
+                });
+            }
+        }
+        None
     }
 
     fn display(&self) {
@@ -113,10 +162,7 @@ impl PuzzleClue for SameColumnClue {
                         is_hoverable: false,
                     },
                 ));
-            let (sprite2, color2) = puzzle.cell_answer_display(CellLoc {
-                row_nr: self.row2,
-                ..self.loc
-            });
+            let (sprite2, color2) = puzzle.cell_answer_display(self.loc2());
             builder
                 .spawn((
                     Sprite::from_color(color2, sprite_size),
@@ -130,11 +176,8 @@ impl PuzzleClue for SameColumnClue {
                         is_hoverable: false,
                     },
                 ));
-            if let Some(row3) = self.row3 {
-                let (sprite3, color3) = puzzle.cell_answer_display(CellLoc {
-                    row_nr: row3,
-                    ..self.loc
-                });
+            if let Some(loc3) = self.loc3() {
+                let (sprite3, color3) = puzzle.cell_answer_display(loc3);
                 builder
                     .spawn((
                         Sprite::from_color(color3, sprite_size),
@@ -177,8 +220,8 @@ impl AdjacentColumnClue {
 }
 
 impl PuzzleClue for AdjacentColumnClue {
-    fn advance_puzzle(&self, puzzle: &Puzzle) {
-        todo!()
+    fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance {
+        None
     }
 
     fn display(&self) {
@@ -264,8 +307,8 @@ impl BetweenColumnsClue {
 }
 
 impl PuzzleClue for BetweenColumnsClue {
-    fn advance_puzzle(&self, puzzle: &Puzzle) {
-        todo!()
+    fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance {
+        None
     }
 
     fn display(&self) {

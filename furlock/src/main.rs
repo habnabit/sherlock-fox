@@ -15,7 +15,7 @@ use bevy::{
         AnimationTargetId,
     },
     color::palettes::css,
-    input::common_conditions::input_just_released,
+    input::common_conditions::{input_just_pressed, input_just_released},
     prelude::*,
     utils::hashbrown::HashMap,
     window::PrimaryWindow,
@@ -91,6 +91,7 @@ fn main() {
             Update,
             (
                 assign_random_color,
+                show_clues.run_if(input_just_pressed(KeyCode::KeyC)),
                 // (
                 fit_inside_window.run_if(any_with_component::<PrimaryWindow>),
                 // fit_inside_row,
@@ -381,7 +382,7 @@ fn spawn_row(
             // let (cluebox, cluebox_fit) = q_cluebox.single();
             let Some(clue): Option<Handle<DynPuzzleClue>> = (try {
                 match rng.0.random_range(0..3) {
-                    0 => clue_assets.add(SameColumnClue::new_random(&mut rng.0, &puzzle)?),
+                    _ => clue_assets.add(SameColumnClue::new_random(&mut rng.0, &puzzle)?),
                     1 => clue_assets.add(AdjacentColumnClue::new_random(&mut rng.0, &puzzle)?),
                     2 => clue_assets.add(BetweenColumnsClue::new_random(&mut rng.0, &puzzle)?),
                     _ => unreachable!(),
@@ -935,6 +936,29 @@ fn interact_drag_ui_move(
         };
         transform.scale.x = scale;
         transform.scale.y = scale;
+    }
+}
+
+fn show_clues(
+    q_clues: Single<&PuzzleClues>,
+    q_puzzle: Single<&Puzzle>,
+    clues: Res<Assets<DynPuzzleClue>>,
+    mut writer: EventWriter<UpdateCellIndex>,
+) {
+    let puzzle = *q_puzzle;
+    let mut to_enact = None;
+    for clue in q_clues.clues.iter() {
+        let Some(clue) = clues.get(clue.id()) else {
+            continue;
+        };
+        let next = clue.advance_puzzle(puzzle);
+        info!("next from {clue:?} => {next:?}");
+        if let Some(next) = next {
+            to_enact = Some(next);
+        }
+    }
+    if let Some(ev) = to_enact {
+        writer.send(ev);
     }
 }
 
