@@ -30,7 +30,7 @@ fn main() {
     App::new()
         .init_resource::<SeededRng>()
         .add_plugins(DefaultPlugins)
-        // .add_plugins(WorldInspectorPlugin::new())
+        .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddRow>()
         .add_event::<UpdateCellDisplay>()
         .add_event::<UpdateCellIndex>()
@@ -50,14 +50,18 @@ fn main() {
         .register_type::<HoverScaleEdge>()
         .register_type::<RowMoveEdge>()
         .register_type::<Puzzle>()
-        .register_type::<PuzzleCell>()
+        .register_type::<PuzzleCellSelection>()
+        .register_type::<PuzzleCellDisplay>()
         .register_type::<PuzzleRow>()
+        .register_type::<SameColumnClue>()
         .register_type::<SeededRng>()
         .register_type::<UpdateCellIndexOperation>()
         .add_observer(cell_clicked_down)
         .add_observer(cell_continue_drag)
         .add_observer(fit_inside_cell)
+        .add_observer(fit_inside_clues)
         .add_observer(fit_inside_matrix)
+        .add_observer(fit_inside_puzzle)
         .add_observer(fit_inside_row)
         .add_observer(fit_to_transform)
         .add_observer(interact_cell_generic::<OnAdd>(1.25))
@@ -100,20 +104,14 @@ impl FromWorld for SeededRng {
 }
 
 #[derive(Debug, Clone, Reflect)]
-struct PuzzleCell {
+struct PuzzleCellSelection {
     #[reflect(ignore)]
     enabled: FixedBitSet,
-    color: Color,
-    atlas_index: usize,
 }
 
-impl PuzzleCell {
-    fn new(enabled: FixedBitSet, color: Color, atlas_index: usize) -> Self {
-        PuzzleCell {
-            enabled,
-            color,
-            atlas_index,
-        }
+impl PuzzleCellSelection {
+    fn new(enabled: FixedBitSet) -> Self {
+        PuzzleCellSelection { enabled }
     }
 
     fn apply(&mut self, index: usize, op: UpdateCellIndexOperation) {
@@ -131,8 +129,16 @@ impl PuzzleCell {
 }
 
 #[derive(Debug, Clone, Reflect)]
+struct PuzzleCellDisplay {
+    atlas_index: usize,
+    color: Color,
+}
+
+#[derive(Debug, Clone, Reflect)]
 struct PuzzleRow {
-    cells: Vec<PuzzleCell>,
+    cell_selection: Vec<PuzzleCellSelection>,
+    cell_display: Vec<PuzzleCellDisplay>,
+    cell_answers: Vec<usize>,
     atlas: Handle<Image>,
     atlas_layout: Handle<TextureAtlasLayout>,
 }
@@ -147,53 +153,167 @@ impl PuzzleRow {
         shuffle_atlas: bool,
     ) -> Self {
         let colors = random_colors(len, rng);
+        let mut cell_answers = (0..len).collect::<Vec<_>>();
+        cell_answers.shuffle(rng);
         let mut bitset = FixedBitSet::with_capacity(len);
         bitset.insert_range(..);
         let mut atlas_index_map = (0..atlas_len).collect::<Vec<_>>();
         if shuffle_atlas {
             atlas_index_map.shuffle(rng);
         }
-        let cells = atlas_index_map
+        let cell_display = atlas_index_map
             .into_iter()
             .take(len)
             .zip(colors)
-            .map(|(atlas_index, color)| PuzzleCell::new(bitset.clone(), color, atlas_index))
+            .map(|(atlas_index, color)| PuzzleCellDisplay {
+                atlas_index,
+                color,
+            })
             .collect();
+        let cell_selection = (0..len).map(|_| PuzzleCellSelection::new(bitset.clone())).collect();
         PuzzleRow {
-            cells,
+            cell_selection,
+            cell_display,
+            cell_answers,
             atlas,
             atlas_layout,
         }
     }
 
     fn len(&self) -> usize {
-        self.cells.len()
+        self.cell_selection.len()
     }
 
-    fn sprite_at(&self, index: usize) -> Sprite {
+    fn display_sprite_at(&self, index: usize) -> Sprite {
         Sprite::from_atlas_image(self.atlas.clone(), TextureAtlas {
             layout: self.atlas_layout.clone(),
-            index: self.cells[index].atlas_index,
+            index: self.cell_display[index].atlas_index,
         })
+    }
+
+    fn display_color_at(&self, index: usize) -> Color {
+        self.cell_display[index].color
+    }
+
+    fn answer_sprite_at(&self, index: usize) -> Sprite {
+        self.display_sprite_at(self.cell_answers[index])
+    }
+
+    fn answer_color_at(&self, index: usize) -> Color {
+        self.display_color_at(self.cell_answers[index])
     }
 }
 
 #[derive(Debug, Component, Default, Reflect)]
 struct Puzzle {
     rows: Vec<PuzzleRow>,
+    max_column: usize,
 }
 
 impl Puzzle {
     fn add_row(&mut self, row: PuzzleRow) {
+        self.max_column = self.max_column.max(row.len());
         self.rows.push(row);
     }
 
-    fn cell(&self, loc: CellLoc) -> &PuzzleCell {
-        &self.rows[loc.row_nr].cells[loc.cell_nr]
+    fn cell(&self, loc: CellLoc) -> &PuzzleCellSelection {
+        &self.rows[loc.row_nr].cell_selection[loc.cell_nr]
     }
 
-    fn cell_mut(&mut self, loc: CellLoc) -> &mut PuzzleCell {
-        &mut self.rows[loc.row_nr].cells[loc.cell_nr]
+    fn cell_mut(&mut self, loc: CellLoc) -> &mut PuzzleCellSelection {
+        &mut self.rows[loc.row_nr].cell_selection[loc.cell_nr]
+    }
+
+    fn cell_display_at(&self, loc: CellLoc) -> (Sprite, Color) {
+        let row = &self.rows[loc.row_nr];
+        (row.display_sprite_at(loc.cell_nr), row.display_color_at(loc.cell_nr))
+    }
+
+    fn cell_answer_at(&self, loc: CellLoc) -> (Sprite, Color) {
+        let row = &self.rows[loc.row_nr];
+        (row.answer_sprite_at(loc.cell_nr), row.answer_color_at(loc.cell_nr))
+    }
+}
+
+trait PuzzleClue {}
+
+#[derive(Debug, Component, Clone, Reflect)]
+struct SameColumnClue {
+    loc: CellLoc,
+    row2: usize,
+    row3: Option<usize>,
+}
+
+impl SameColumnClue {
+    fn new_random<R: Rng>(rng: &mut R, puzzle: &Puzzle) -> Option<Self> {
+        let n_rows = puzzle.rows.len();
+        let mut rows = rand::seq::index::sample(rng, n_rows, n_rows).into_iter();
+        let first_row = rows.next()?;
+        let cell_nr = rng.random_range(0..puzzle.max_column);
+        let loc = CellLoc {
+            row_nr: first_row,
+            cell_nr,
+        };
+        let row2 = rows.next()?;
+        let row3 = if rng.random_ratio(1, 3) {
+            rows.next()
+        } else {
+            None
+        };
+        Some(SameColumnClue { loc, row2, row3 })
+    }
+}
+
+#[derive(Debug, Component, Clone, Reflect)]
+struct AdjacentColumnClue {
+    loc1: CellLoc,
+    loc2: CellLoc,
+}
+
+impl AdjacentColumnClue {
+    fn new_random<R: Rng>(rng: &mut R, puzzle: &Puzzle) -> Option<Self> {
+        let n_rows = puzzle.rows.len();
+        let [col1, col2] = rand::seq::index::sample_array(rng, puzzle.max_column)?;
+        Some(AdjacentColumnClue {
+            loc1: CellLoc {
+                row_nr: rng.random_range(0..n_rows),
+                cell_nr: col1,
+            },
+            loc2: CellLoc {
+                row_nr: rng.random_range(0..n_rows),
+                cell_nr: col2,
+            },
+        })
+    }
+}
+
+#[derive(Debug, Component, Clone, Reflect)]
+struct BetweenColumnsClue {
+    loc1: CellLoc,
+    loc2: CellLoc,
+    loc3: CellLoc,
+}
+
+impl BetweenColumnsClue {
+    fn new_random<R: Rng>(rng: &mut R, puzzle: &Puzzle) -> Option<Self> {
+        let n_rows = puzzle.rows.len();
+        let mut columns: [usize; 3] = rand::seq::index::sample_array(rng, puzzle.max_column)?;
+        columns.sort();
+        let [col1, col2, col3] = columns;
+        Some(BetweenColumnsClue {
+            loc1: CellLoc {
+                row_nr: rng.random_range(0..n_rows),
+                cell_nr: col1,
+            },
+            loc2: CellLoc {
+                row_nr: rng.random_range(0..n_rows),
+                cell_nr: col2,
+            },
+            loc3: CellLoc {
+                row_nr: rng.random_range(0..n_rows),
+                cell_nr: col3,
+            },
+        })
     }
 }
 
@@ -309,6 +429,15 @@ impl RandomColorSprite {
 struct AssignRandomColor;
 
 #[derive(Reflect, Debug, Component)]
+struct DisplayPuzzle;
+
+#[derive(Reflect, Debug, Component)]
+struct DisplayCluebox;
+
+#[derive(Reflect, Debug, Component)]
+struct DisplayClue;
+
+#[derive(Reflect, Debug, Component)]
 struct DisplayMatrix;
 
 #[derive(Reflect, Debug, Component)]
@@ -350,6 +479,7 @@ struct RowMoveEdge(Option<NodeIndex>);
 #[derive(Resource)]
 struct PuzzleSpawn {
     timer: Timer,
+    show_clues: usize,
 }
 
 #[derive(Event, Debug)]
@@ -405,13 +535,194 @@ fn spawn_row(
     mut config: ResMut<PuzzleSpawn>,
     puzzle: Single<&Puzzle>,
     mut rng: ResMut<SeededRng>,
+    q_cluebox: Query<(Entity, &FitWithin), With<DisplayCluebox>>,
+    mut commands: Commands,
+    mut update_cell_writer: EventWriter<UpdateCellIndex>,
 ) {
     static LENGTH_SAMPLE: &[usize] = &[4, 5, 5, 5, 5, 6, 6, 7];
     config.timer.tick(time.delta());
     if config.timer.finished() {
-        if puzzle.rows.len() < 4 {
+        if puzzle.rows.len() < 5 {
             // let len = LENGTH_SAMPLE.choose(&mut rng.0).cloned().unwrap();
-            writer.send(AddRow { len: 4 });
+            writer.send(AddRow { len: 5 });
+        } else if config.show_clues > 0 {
+            config.show_clues -= 1;
+            if config.show_clues == 0 {
+                let row_nr = rng.0.random_range(0..puzzle.rows.len());
+                let cell_nr = rng.0.random_range(0..puzzle.max_column);
+                let loc = CellLoc { row_nr, cell_nr };
+                let index = puzzle.rows[row_nr].cell_answers[cell_nr];
+                update_cell_writer.send(UpdateCellIndex { index: CellLocIndex { loc, index }, op: UpdateCellIndexOperation::Solo });
+            }
+            config.timer = Timer::new(Duration::from_secs_f32(0.5), TimerMode::Repeating);
+            let (cluebox, cluebox_fit) = q_cluebox.single();
+            let sprite_size = Vec2::new(32., 32.);
+            let size_sprite = |mut sprite: Sprite| {
+                sprite.custom_size = Some(sprite_size);
+                sprite
+            };
+            match rng.0.random_range(0..3) {
+                0 => {
+                let clue = SameColumnClue::new_random(&mut rng.0, &puzzle);
+                info!("a clue! {clue:?}");
+                let Some(clue) = clue else { return };
+                commands.entity(cluebox).with_children(|cluebox| {
+                    cluebox
+                        .spawn((FitWithinBundle::new(), DisplayClue))
+                        .with_children(|clue_builder| {
+                            let (sprite1, color1) = puzzle.cell_answer_at(clue.loc);
+                            clue_builder
+                                .spawn((
+                                    Sprite::from_color(color1, sprite_size),
+                                    Transform::from_xyz(0., -32., 0.),
+                                ))
+                                .with_child((
+                                    size_sprite(sprite1),
+                                    Transform::from_xyz(0., 0., 1.),
+                                    PickingBehavior {
+                                        should_block_lower: false,
+                                        is_hoverable: false,
+                                    },
+                                ));
+                            let (sprite2, color2) = puzzle.cell_answer_at(CellLoc {
+                                row_nr: clue.row2,
+                                ..clue.loc
+                            });
+                            clue_builder
+                                .spawn((
+                                    Sprite::from_color(color2, sprite_size),
+                                    Transform::from_xyz(0., 0., 0.),
+                                ))
+                                .with_child((
+                                    size_sprite(sprite2),
+                                    Transform::from_xyz(0., 0., 1.),
+                                    PickingBehavior {
+                                        should_block_lower: false,
+                                        is_hoverable: false,
+                                    },
+                                ));
+                            if let Some(row3) = clue.row3 {
+                                let (sprite3, color3) = puzzle.cell_answer_at(CellLoc {
+                                    row_nr: row3,
+                                    ..clue.loc
+                                });
+                                clue_builder
+                                    .spawn((
+                                        Sprite::from_color(color3, sprite_size),
+                                        Transform::from_xyz(0., 32., 0.),
+                                    ))
+                                    .with_child((
+                                        size_sprite(sprite3),
+                                        Transform::from_xyz(0., 0., 1.),
+                                        PickingBehavior {
+                                            should_block_lower: false,
+                                            is_hoverable: false,
+                                        },
+                                    ));
+                            }
+                        })
+                        .insert(clue);
+                });
+            }
+            1 => {
+                let clue = AdjacentColumnClue::new_random(&mut rng.0, &puzzle);
+                info!("a clue! {clue:?}");
+                let Some(clue) = clue else { return };
+                commands.entity(cluebox).with_children(|cluebox| {
+                    cluebox
+                        .spawn((FitWithinBundle::new(), DisplayClue))
+                        .with_children(|clue_builder| {
+                            let colspan = clue.loc1.cell_nr.abs_diff(clue.loc2.cell_nr).saturating_sub(1);
+                            clue_builder.spawn(Text2d::new(format!("{colspan}")));
+                            let (sprite1, color1) = puzzle.cell_answer_at(clue.loc1);
+                            clue_builder
+                                .spawn((
+                                    Sprite::from_color(color1, sprite_size),
+                                    Transform::from_xyz(-25., 0., 0.),
+                                ))
+                                .with_child((
+                                    size_sprite(sprite1),
+                                    Transform::from_xyz(0., 0., 1.),
+                                    PickingBehavior {
+                                        should_block_lower: false,
+                                        is_hoverable: false,
+                                    },
+                                ));
+                            let (sprite2, color2) = puzzle.cell_answer_at(clue.loc2);
+                            clue_builder
+                                .spawn((
+                                    Sprite::from_color(color2, sprite_size),
+                                    Transform::from_xyz(25., 0., 0.),
+                                ))
+                                .with_child((
+                                    size_sprite(sprite2),
+                                    Transform::from_xyz(0., 0., 1.),
+                                    PickingBehavior {
+                                        should_block_lower: false,
+                                        is_hoverable: false,
+                                    },
+                                ));
+                        })
+                        .insert(clue);
+                });
+            }
+            2 => {
+                let clue = BetweenColumnsClue::new_random(&mut rng.0, &puzzle);
+                info!("a clue! {clue:?}");
+                let Some(clue) = clue else { return };
+                commands.entity(cluebox).with_children(|cluebox| {
+                    cluebox
+                        .spawn((FitWithinBundle::new(), DisplayClue))
+                        .with_children(|clue_builder| {
+                            let (sprite1, color1) = puzzle.cell_answer_at(clue.loc1);
+                            clue_builder
+                                .spawn((
+                                    Sprite::from_color(color1, sprite_size),
+                                    Transform::from_xyz(-32., 0., 0.),
+                                ))
+                                .with_child((
+                                    size_sprite(sprite1),
+                                    Transform::from_xyz(0., 0., 1.),
+                                    PickingBehavior {
+                                        should_block_lower: false,
+                                        is_hoverable: false,
+                                    },
+                                ));
+                            let (sprite2, color2) = puzzle.cell_answer_at(clue.loc2);
+                            clue_builder
+                                .spawn((
+                                    Sprite::from_color(color2, sprite_size),
+                                    Transform::from_xyz(0., 0., -1.),
+                                ))
+                                .with_child((
+                                    size_sprite(sprite2),
+                                    Transform::from_xyz(0., 0., 1.),
+                                    PickingBehavior {
+                                        should_block_lower: false,
+                                        is_hoverable: false,
+                                    },
+                                ));
+                            let (sprite3, color3) = puzzle.cell_answer_at(clue.loc3);
+                            clue_builder
+                                .spawn((
+                                    Sprite::from_color(color3, sprite_size),
+                                    Transform::from_xyz(32., 0., 0.),
+                                ))
+                                .with_child((
+                                    size_sprite(sprite3),
+                                    Transform::from_xyz(0., 0., 1.),
+                                    PickingBehavior {
+                                        should_block_lower: false,
+                                        is_hoverable: false,
+                                    },
+                                ));
+                        })
+                        .insert(clue);
+                });
+            }
+            _ => {}
+        }
+            cluebox_fit.refresh_rect(&mut commands, cluebox);
         }
     }
 }
@@ -576,13 +887,13 @@ fn add_row(
                             .with_children(|cell_spawner| {
                                 let button_size = Vec2::new(32., 32.);
                                 for index in 0..ev.len {
-                                    let mut sprite = puzzle_row.sprite_at(index);
+                                    let mut sprite = puzzle_row.display_sprite_at(index);
                                     sprite.custom_size = Some(button_size - Vec2::new(5., 5.));
                                     sprite.color = Color::hsla(0., 0., 1., 1.);
                                     cell_spawner
                                         .spawn((
                                             Sprite::from_color(
-                                                puzzle_row.cells[index].color,
+                                                puzzle_row.display_color_at(index),
                                                 button_size,
                                             ),
                                             FitWithinBundle::new(),
@@ -631,6 +942,66 @@ fn fit_inside_window(
     // info!("ensuring window fit of window({:?}) {:?} {:?}", window_size, camera_entity, camera);
     for (entity, fit_within) in &q_fit_root {
         fit_within.set_rect(&mut commands, entity, window_size);
+    }
+}
+
+fn fit_inside_puzzle(
+    ev: Trigger<OnInsert, (FitWithin, DisplayPuzzle)>,
+    q_about_target: Query<
+        (&FitWithin, &Children),
+        (
+            With<DisplayPuzzle>,
+            Without<DisplayMatrix>,
+            Without<DisplayCluebox>,
+        ),
+    >,
+    q_matrix: Query<(Entity, &FitWithin, &DisplayMatrix)>,
+    q_clues: Query<(Entity, &FitWithin, &DisplayCluebox)>,
+    mut commands: Commands,
+) {
+    // info!("testing matrix fit of {:?}", ev.entity());
+    let Ok((within, children)) = q_about_target.get(ev.entity()) else {
+        return;
+    };
+    let Some((matrix)) = children.iter().filter_map(|e| q_matrix.get(*e).ok()).next() else {
+        return;
+    };
+    let Some((clues)) = children.iter().filter_map(|e| q_clues.get(*e).ok()).next() else {
+        return;
+    };
+    let fit = within.rect;
+    let cluebox_height = fit.height() / 4.;
+    let cluebox_y = fit.max.y - cluebox_height;
+    let matrix_rect = Rect::new(fit.min.x, fit.min.y, fit.max.x, cluebox_y);
+    let cluebox_rect = Rect::new(fit.min.x, cluebox_y, fit.max.x, fit.max.y);
+    matrix.1.set_rect(&mut commands, matrix.0, matrix_rect);
+    clues.1.set_rect(&mut commands, clues.0, cluebox_rect);
+}
+
+fn fit_inside_clues(
+    ev: Trigger<OnInsert, (FitWithin, DisplayCluebox)>,
+    q_about_target: Query<(&FitWithin, &Children), (With<DisplayCluebox>, Without<DisplayClue>)>,
+    q_children: Query<(Entity, &FitWithin, &DisplayClue)>,
+    mut commands: Commands,
+) {
+    let Ok((within, children)) = q_about_target.get(ev.entity()) else {
+        return;
+    };
+    let children = children
+        .iter()
+        .filter_map(|e| q_children.get(*e).ok())
+        .collect::<Vec<_>>();
+    let fit = within.rect;
+    let fit_width = fit.width();
+    let clue_width = fit_width / children.len() as f32;
+    // let clue_width = 45.;
+    let mut current_x = fit.min.x;
+    for (entity, fit_within, _) in children {
+        let new_x = current_x + clue_width;
+        let clue_rect =
+            Rect::from_corners(Vec2::new(current_x, fit.min.y), Vec2::new(new_x, fit.max.y));
+        fit_within.set_rect(&mut commands, entity, clue_rect);
+        current_x = new_x;
     }
 }
 
@@ -1106,12 +1477,17 @@ fn setup(mut commands: Commands, mut animation_graphs: ResMut<Assets<AnimationGr
     commands.spawn(<Puzzle as Default>::default());
     commands.insert_resource(PuzzleSpawn {
         timer: Timer::new(Duration::from_secs_f32(0.1), TimerMode::Repeating),
+        show_clues: 10,
     });
-    commands.spawn((
-        DisplayMatrix,
-        FitWithinBundle::new(),
-        AnimationPlayer::default(),
-        AnimationGraphHandle(animation_graphs.add(AnimationGraph::new())),
-        // RandomColorSprite::new(),
-    ));
+    commands
+        .spawn((DisplayPuzzle, FitWithinBundle::new()))
+        .with_children(|puzzle| {
+            puzzle.spawn((
+                DisplayMatrix,
+                FitWithinBundle::new(),
+                AnimationPlayer::default(),
+                AnimationGraphHandle(animation_graphs.add(AnimationGraph::new())),
+            ));
+            puzzle.spawn((DisplayCluebox, FitWithinBundle::new()));
+        });
 }
