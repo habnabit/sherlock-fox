@@ -33,7 +33,7 @@ impl PuzzleCellSelection {
         PuzzleCellSelection::Enabled(enabled)
     }
 
-    pub fn enabled(&self, index: usize) -> bool {
+    pub fn is_enabled(&self, index: usize) -> bool {
         use PuzzleCellSelection::*;
         match self {
             Enabled(s) => s.contains(index),
@@ -46,6 +46,22 @@ impl PuzzleCellSelection {
         match self {
             Enabled(s) => s.contains(index) && s.count_ones(..) == 1,
             &Solo { index: i, .. } => index == i,
+        }
+    }
+
+    pub fn is_any_solo(&self) -> Option<usize> {
+        use PuzzleCellSelection::*;
+        match self {
+            Enabled(s) => {
+                let mut ones = s.ones();
+                let ret = ones.next();
+                if ret.is_some() && ones.next().is_none() {
+                    ret
+                } else {
+                    None
+                }
+            }
+            &Solo { index, .. } => Some(index),
         }
     }
 

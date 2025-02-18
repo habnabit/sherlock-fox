@@ -179,6 +179,14 @@ impl<'p> ImplicationResolver<'p> {
             when_fn,
         }
     }
+
+    fn when_disabled(&self) -> ImplicationBuilder<impl Fn(&Puzzle, CellLocIndex) -> bool> {
+        self.when(|p, l| !p.cell_selection(l.loc).is_enabled(l.index))
+    }
+
+    fn when_solo(&self) -> ImplicationBuilder<impl Fn(&Puzzle, CellLocIndex) -> bool> {
+        self.when(|p, l| p.cell_selection(l.loc).is_solo(l.index))
+    }
 }
 
 struct ImplicationBuilder<'r, W> {
@@ -211,6 +219,20 @@ where
                 None
             })
     }
+
+    fn then_disable<'s: 'r>(&'s self) -> impl Iterator<Item = UpdateCellIndex> + 'r {
+        self.then(|index| UpdateCellIndex {
+            index,
+            op: UpdateCellIndexOperation::Clear,
+        })
+    }
+
+    fn then_solo<'s: 'r>(&'s self) -> impl Iterator<Item = UpdateCellIndex> + 'r {
+        self.then(|index| UpdateCellIndex {
+            index,
+            op: UpdateCellIndexOperation::Solo,
+        })
+    }
 }
 
 impl PuzzleClue for SameColumnClue {
@@ -225,20 +247,9 @@ impl PuzzleClue for SameColumnClue {
         for sub_resolver in resolver.iter_cols() {
             // info!("  sub_resolver: {sub_resolver:?}");
             for ev in sub_resolver
-                .when(|p, l| !p.cell_selection(l.loc).enabled(l.index))
-                .then(|index| UpdateCellIndex {
-                    index,
-                    op: UpdateCellIndexOperation::Clear,
-                })
-            {
-                return Some(ev);
-            }
-            for ev in sub_resolver
-                .when(|p, l| p.cell_selection(l.loc).is_solo(l.index))
-                .then(|index| UpdateCellIndex {
-                    index,
-                    op: UpdateCellIndexOperation::Solo,
-                })
+                .when_solo()
+                .then_solo()
+                .chain(sub_resolver.when_disabled().then_disable())
             {
                 return Some(ev);
             }
@@ -340,7 +351,7 @@ impl PuzzleClue for AdjacentColumnClue {
         for sub_resolver in resolver.iter_cols() {
             info!("  sub_resolver: {sub_resolver:?}");
             for ev in sub_resolver
-                .when(|p, l| !p.cell_selection(l.loc).enabled(l.index))
+                .when(|p, l| !p.cell_selection(l.loc).is_enabled(l.index))
                 .then(|index| UpdateCellIndex {
                     index,
                     op: UpdateCellIndexOperation::Clear,

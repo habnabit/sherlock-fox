@@ -17,7 +17,7 @@ use bevy::{
     color::palettes::css,
     input::common_conditions::{input_just_pressed, input_just_released},
     prelude::*,
-    utils::hashbrown::HashMap,
+    utils::hashbrown::{HashMap, HashSet},
     window::PrimaryWindow,
 };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
@@ -1085,12 +1085,39 @@ fn cell_update(
     mut reader: EventReader<UpdateCellIndex>,
     mut writer: EventWriter<UpdateCellDisplay>,
 ) {
+    let mut to_update = HashSet::new();
+    let mut solo_to_scan = vec![];
     for &UpdateCellIndex { index, op } in reader.read() {
         let puzzle_cell = puzzle.cell_selection_mut(index.loc);
         info!("updating cell before={puzzle_cell:?}");
         puzzle_cell.apply(index.index, op);
         info!("updating cell before={puzzle_cell:?}");
-        writer.send(UpdateCellDisplay { loc: index.loc });
+        to_update.insert(index.loc);
+        if let Some(solo_index) = puzzle_cell.is_any_solo() {
+            solo_to_scan.push(CellLocIndex {
+                index: solo_index,
+                ..index
+            });
+        }
+    }
+    // TODO: move inference
+    for index in solo_to_scan {
+        for cell_nr in 0..puzzle.max_column {
+            if cell_nr == index.loc.cell_nr {
+                continue;
+            }
+            let this_loc = CellLoc {
+                cell_nr,
+                ..index.loc
+            };
+            puzzle
+                .cell_selection_mut(this_loc)
+                .apply(index.index, UpdateCellIndexOperation::Clear);
+            to_update.insert(this_loc);
+        }
+    }
+    for loc in to_update {
+        writer.send(UpdateCellDisplay { loc });
     }
 }
 
@@ -1160,7 +1187,11 @@ fn cell_update_display(
             let Some(graph) = animation_graphs.get_mut(graph_handle.id()) else {
                 continue;
             };
-            let alpha = if cell.enabled(index.index) { 1. } else { 0.2 };
+            let alpha = if cell.is_enabled(index.index) {
+                1.
+            } else {
+                0.2
+            };
 
             let mut clip = AnimationClip::default();
             clip.add_curve_to_target(
