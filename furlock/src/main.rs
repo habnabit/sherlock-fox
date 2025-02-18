@@ -40,7 +40,7 @@ fn main() {
         .init_resource::<Assets<DynPuzzleClue>>()
         .init_resource::<SeededRng>()
         .add_plugins(DefaultPlugins)
-        .add_plugins(WorldInspectorPlugin::new())
+        // .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddClue>()
         .add_event::<AddRow>()
         .add_event::<UpdateCellDisplay>()
@@ -381,8 +381,8 @@ fn spawn_row(
             // let (cluebox, cluebox_fit) = q_cluebox.single();
             let Some(clue): Option<Handle<DynPuzzleClue>> = (try {
                 match rng.0.random_range(0..3) {
-                    _ => clue_assets.add(SameColumnClue::new_random(&mut rng.0, &puzzle)?),
-                    1 => clue_assets.add(AdjacentColumnClue::new_random(&mut rng.0, &puzzle)?),
+                    0 => clue_assets.add(SameColumnClue::new_random(&mut rng.0, &puzzle)?),
+                    _ => clue_assets.add(AdjacentColumnClue::new_random(&mut rng.0, &puzzle)?),
                     2 => clue_assets.add(BetweenColumnsClue::new_random(&mut rng.0, &puzzle)?),
                     _ => unreachable!(),
                 }
@@ -1089,9 +1089,7 @@ fn cell_update(
     let mut solo_to_scan = vec![];
     for &UpdateCellIndex { index, op } in reader.read() {
         let puzzle_cell = puzzle.cell_selection_mut(index.loc);
-        info!("updating cell before={puzzle_cell:?}");
         puzzle_cell.apply(index.index, op);
-        info!("updating cell before={puzzle_cell:?}");
         to_update.insert(index.loc);
         if let Some(solo_index) = puzzle_cell.is_any_solo() {
             solo_to_scan.push(CellLocIndex {

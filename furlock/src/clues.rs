@@ -101,32 +101,62 @@ impl SameColumnClue {
     }
 }
 
-#[derive(Clone)]
-struct ImplicationResolver<'p> {
+struct ImplicationResolver<'p, R> {
     puzzle: &'p Puzzle,
     cells: Vec<CellLocIndex>,
+    actions: Vec<ImplicationAction<R>>,
 }
 
-impl<'p> std::fmt::Debug for ImplicationResolver<'p> {
+impl<'p, R> std::fmt::Debug for ImplicationResolver<'p, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ImplicationResolver")
             .field("puzzle", &(self.puzzle as *const Puzzle as usize))
             .field("cells", &self.cells)
+            .field("actions", &self.actions)
             .finish()
     }
 }
 
+#[derive(Copy, Clone)]
+struct PuzzleProxy<'p>(&'p Puzzle);
+
+impl<'p> PuzzleProxy<'p> {
+    fn is_enabled(&self, index: CellLocIndex) -> bool {
+        self.0.cell_selection(index.loc).is_enabled(index.index)
+    }
+    fn is_solo(&self, index: CellLocIndex) -> bool {
+        self.0.cell_selection(index.loc).is_solo(index.index)
+    }
+    fn is_enabled_not_solo(&self, index: CellLocIndex) -> bool {
+        let sel = self.0.cell_selection(index.loc);
+        sel.is_enabled(index.index) && !sel.is_solo(index.index)
+    }
+}
+
+struct ImplicationAction<R> {
+    when_fn: Box<dyn Fn(PuzzleProxy, CellLocIndex, CellLocIndex) -> bool>,
+    then_fn: Box<dyn Fn(CellLocIndex) -> R>,
+}
+
+impl<R> std::fmt::Debug for ImplicationAction<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImplicationAction").finish()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 struct ImplicationWidth {
     min: usize,
     max: usize,
     cellspan: usize,
 }
 
-impl<'p> ImplicationResolver<'p> {
+impl<'p, R> ImplicationResolver<'p, R> {
     fn new(puzzle: &'p Puzzle) -> Self {
         ImplicationResolver {
             puzzle,
             cells: Vec::default(),
+            actions: Vec::default(),
         }
     }
 
@@ -137,17 +167,7 @@ impl<'p> ImplicationResolver<'p> {
 
     fn width(&self) -> ImplicationWidth {
         use itertools::{Itertools, MinMaxResult::*};
-        let (min, max) = match self
-            .cells
-            .iter()
-            .map(
-                |CellLocIndex {
-                     loc: CellLoc { cell_nr, .. },
-                     ..
-                 }| *cell_nr,
-            )
-            .minmax()
-        {
+        let (min, max) = match self.cells.iter().map(|i| i.loc.cell_nr).minmax() {
             OneElement(c) => (c, c),
             MinMax(a, b) => (a, b),
             NoElements => unreachable!(),
@@ -159,100 +179,135 @@ impl<'p> ImplicationResolver<'p> {
         }
     }
 
-    fn iter_cols(&self) -> impl Iterator<Item = ImplicationResolver> {
+    fn iter_cols<S>(&self) -> impl Iterator<Item = ImplicationResolver<S>> {
         let width = self.width();
         (0..self.puzzle.max_column - width.cellspan).map(move |offset| {
             let mut cells = self.cells.clone();
             for cell in &mut cells {
                 cell.loc.cell_nr = cell.loc.cell_nr + offset - width.min;
             }
-            ImplicationResolver { cells, ..*self }
+            ImplicationResolver {
+                cells,
+                actions: Vec::default(),
+                puzzle: self.puzzle,
+            }
         })
     }
 
-    fn when<'r, W: Fn(&Puzzle, CellLocIndex) -> bool>(
-        &'r self,
+    fn when<'r: 'p, W: Fn(PuzzleProxy, CellLocIndex, CellLocIndex) -> bool>(
+        &'r mut self,
         when_fn: W,
-    ) -> ImplicationBuilder<'r, W> {
+    ) -> ImplicationBuilder<'r, W, R> {
         ImplicationBuilder {
             resolver: self,
             when_fn,
         }
     }
 
-    fn when_disabled(&self) -> ImplicationBuilder<impl Fn(&Puzzle, CellLocIndex) -> bool> {
-        self.when(|p, l| !p.cell_selection(l.loc).is_enabled(l.index))
-    }
+    // fn when_enabled(&self) -> ImplicationBuilder<impl Fn(&Puzzle, CellLocIndex) -> bool> {
+    //     self.when(|p, l| p.cell_selection(l.loc).is_enabled(l.index))
+    // }
 
-    fn when_solo(&self) -> ImplicationBuilder<impl Fn(&Puzzle, CellLocIndex) -> bool> {
-        self.when(|p, l| p.cell_selection(l.loc).is_solo(l.index))
+    // fn when_disabled(&self) -> ImplicationBuilder<impl Fn(&Puzzle, CellLocIndex) -> bool> {
+    //     self.when(|p, l| !p.cell_selection(l.loc).is_enabled(l.index))
+    // }
+
+    // fn when_solo(&self) -> ImplicationBuilder<impl Fn(&Puzzle, CellLocIndex) -> bool> {
+    //     self.when(|p, l| p.cell_selection(l.loc).is_solo(l.index))
+    // }
+
+    fn iter_perm_2s(&mut self) -> impl Iterator<Item = R> + use<'_, R> {
+        use itertools::Itertools;
+        let proxy = PuzzleProxy(self.puzzle);
+        let actions_iter = self.actions.iter();
+        self.cells.iter().permutations(2).flat_map(move |locs| {
+            let &[&loc1, &loc2] = &locs[..] else {
+                unreachable!();
+            };
+            actions_iter.clone().filter_map(move |a| {
+                if (a.when_fn)(proxy, loc1, loc2) {
+                    Some((a.then_fn)(loc1))
+                } else {
+                    None
+                }
+            })
+        })
     }
 }
 
-struct ImplicationBuilder<'r, W> {
-    resolver: &'r ImplicationResolver<'r>,
+struct ImplicationBuilder<'r, W, R> {
+    resolver: &'r mut ImplicationResolver<'r, R>,
     when_fn: W,
 }
 
-impl<'r, W> ImplicationBuilder<'r, W>
+impl<'r, W, R> ImplicationBuilder<'r, W, R>
 where
-    W: Fn(&Puzzle, CellLocIndex) -> bool,
+    W: Fn(PuzzleProxy, CellLocIndex, CellLocIndex) -> bool + 'static,
 {
-    fn then<'s: 'r, R, T: Fn(CellLocIndex) -> R + 'r>(
-        &'s self,
+    fn then<T: Fn(CellLocIndex) -> R + 'static>(
+        self,
         then_fn: T,
-    ) -> impl Iterator<Item = R> + 'r {
-        use itertools::Itertools;
+    ) -> &'r mut ImplicationResolver<'r, R> {
+        let action = ImplicationAction {
+            when_fn: Box::new(self.when_fn),
+            then_fn: Box::new(then_fn),
+        };
+        self.resolver.actions.push(action);
         self.resolver
-            .cells
-            .iter()
-            .permutations(2)
-            .filter_map(move |locs| {
-                let &[&loc1, &loc2] = &locs[..] else {
-                    unreachable!();
-                };
-                if dbg!(!(self.when_fn)(self.resolver.puzzle, dbg!(loc1)))
-                    && dbg!((self.when_fn)(self.resolver.puzzle, dbg!(loc2)))
-                {
-                    return Some(then_fn(loc1));
-                }
-                None
-            })
     }
 
-    fn then_disable<'s: 'r>(&'s self) -> impl Iterator<Item = UpdateCellIndex> + 'r {
-        self.then(|index| UpdateCellIndex {
-            index,
-            op: UpdateCellIndexOperation::Clear,
-        })
-    }
+    // fn then_disable<'s: 'r>(&'s self) -> impl Iterator<Item = UpdateCellIndex> + 'r {
+    //     self.then(|index| UpdateCellIndex {
+    //         index,
+    //         op: UpdateCellIndexOperation::Clear,
+    //     })
+    // }
 
-    fn then_solo<'s: 'r>(&'s self) -> impl Iterator<Item = UpdateCellIndex> + 'r {
-        self.then(|index| UpdateCellIndex {
-            index,
-            op: UpdateCellIndexOperation::Solo,
-        })
-    }
+    // fn then_solo<'s: 'r>(&'s self) -> impl Iterator<Item = UpdateCellIndex> + 'r {
+    //     self.then(|index| UpdateCellIndex {
+    //         index,
+    //         op: UpdateCellIndexOperation::Solo,
+    //     })
+    // }
 }
 
 impl PuzzleClue for SameColumnClue {
     fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance {
-        let mut resolver = ImplicationResolver::new(puzzle);
+        let mut resolver = ImplicationResolver::<()>::new(puzzle);
         resolver.add_loc(self.loc);
         resolver.add_loc(self.loc2());
         if let Some(loc3) = self.loc3() {
             resolver.add_loc(loc3);
         }
         // info!("resolver: {resolver:?}");
-        for sub_resolver in resolver.iter_cols() {
-            // info!("  sub_resolver: {sub_resolver:?}");
-            for ev in sub_resolver
-                .when_solo()
-                .then_solo()
-                .chain(sub_resolver.when_disabled().then_disable())
-            {
+        for mut sub_resolver in resolver.iter_cols() {
+            let sub_resolver = sub_resolver
+                .when(|p, l1, l2| !p.is_enabled(l1) && p.is_solo(l2))
+                .then(|index| panic!("contradiction at {index:?}"))
+                .when(|p, l1, l2| p.is_enabled_not_solo(l1) && p.is_solo(l2))
+                .then(|index| UpdateCellIndex {
+                    index,
+                    op: UpdateCellIndexOperation::Solo,
+                })
+                .when(|p, l1, l2| p.is_enabled_not_solo(l1) && !p.is_enabled(l2))
+                .then(|index| UpdateCellIndex {
+                    index,
+                    op: UpdateCellIndexOperation::Clear,
+                });
+            for ev in sub_resolver.iter_perm_2s() {
                 return Some(ev);
             }
+            // info!("  sub_resolver: {sub_resolver:?}");
+            // for ev in sub_resolver
+            //     .when_solo()
+            //     .then_solo()
+            //     .chain(sub_resolver.when_disabled().then_disable())
+            // {
+            //     return Some(ev);
+            // }
+            // for loc in sub_resolver.when_enabled().then(|loc| loc) {
+            //     info!("!! contradiction !! @{loc:?}");
+            // }
         }
         None
     }
@@ -344,31 +399,64 @@ impl AdjacentColumnClue {
 
 impl PuzzleClue for AdjacentColumnClue {
     fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance {
-        let mut resolver = ImplicationResolver::new(puzzle);
+        let mut resolver = ImplicationResolver::<()>::new(puzzle);
         resolver.add_loc(self.loc1);
         resolver.add_loc(self.loc2);
-        info!("resolver: {resolver:?}");
-        for sub_resolver in resolver.iter_cols() {
-            info!("  sub_resolver: {sub_resolver:?}");
-            for ev in sub_resolver
-                .when(|p, l| !p.cell_selection(l.loc).is_enabled(l.index))
-                .then(|index| UpdateCellIndex {
-                    index,
-                    op: UpdateCellIndexOperation::Clear,
-                })
-            {
-                return Some(ev);
-            }
-            for ev in sub_resolver
-                .when(|p, l| !p.cell_selection(l.loc).is_solo(l.index))
+        // info!("resolver: {resolver:?}");
+        for mut sub_resolver in resolver.iter_cols() {
+            let sub_resolver = sub_resolver
+                .when(|p, l1, l2| !p.is_enabled(l1) && p.is_solo(l2))
+                .then(|index| panic!("contradiction at {index:?}"))
+                .when(|p, l1, l2| p.is_enabled_not_solo(l1) && p.is_solo(l2))
                 .then(|index| UpdateCellIndex {
                     index,
                     op: UpdateCellIndexOperation::Solo,
                 })
-            {
+                .when(|p, l1, l2| p.is_enabled_not_solo(l1) && !p.is_enabled(l2))
+                .then(|index| UpdateCellIndex {
+                    index,
+                    op: UpdateCellIndexOperation::Clear,
+                });
+            for ev in sub_resolver.iter_perm_2s() {
                 return Some(ev);
             }
+            // info!("  sub_resolver: {sub_resolver:?}");
+            // for ev in sub_resolver
+            //     .when_solo()
+            //     .then_solo()
+            //     .chain(sub_resolver.when_disabled().then_disable())
+            // {
+            //     return Some(ev);
+            // }
+            // for loc in sub_resolver.when_enabled().then(|loc| loc) {
+            //     info!("!! contradiction !! @{loc:?}");
+            // }
         }
+        // let mut resolver = ImplicationResolver::new(puzzle);
+        // resolver.add_loc(self.loc1);
+        // resolver.add_loc(self.loc2);
+        // // info!("resolver: {resolver:?}");
+        // for sub_resolver in resolver.iter_cols() {
+        //     // info!("  sub_resolver: {sub_resolver:?}");
+        //     // for ev in sub_resolver
+        //     //     .when(|p, l| !p.cell_selection(l.loc).is_enabled(l.index))
+        //     //     .then(|index| UpdateCellIndex {
+        //     //         index,
+        //     //         op: UpdateCellIndexOperation::Clear,
+        //     //     })
+        //     // {
+        //     //     return Some(ev);
+        //     // }
+        //     // for ev in sub_resolver
+        //     //     .when(|p, l| !p.cell_selection(l.loc).is_solo(l.index))
+        //     //     .then(|index| UpdateCellIndex {
+        //     //         index,
+        //     //         op: UpdateCellIndexOperation::Solo,
+        //     //     })
+        //     // {
+        //     //     return Some(ev);
+        //     // }
+        // }
         None
     }
 
