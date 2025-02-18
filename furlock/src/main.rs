@@ -1087,7 +1087,9 @@ fn cell_update(
 ) {
     for &UpdateCellIndex { index, op } in reader.read() {
         let puzzle_cell = puzzle.cell_selection_mut(index.loc);
+        info!("updating cell before={puzzle_cell:?}");
         puzzle_cell.apply(index.index, op);
+        info!("updating cell before={puzzle_cell:?}");
         writer.send(UpdateCellDisplay { loc: index.loc });
     }
 }
@@ -1158,11 +1160,7 @@ fn cell_update_display(
             let Some(graph) = animation_graphs.get_mut(graph_handle.id()) else {
                 continue;
             };
-            let alpha = if cell.enabled.contains(index.index) {
-                1.
-            } else {
-                0.2
-            };
+            let alpha = if cell.enabled(index.index) { 1. } else { 0.2 };
 
             let mut clip = AnimationClip::default();
             clip.add_curve_to_target(

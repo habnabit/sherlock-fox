@@ -23,25 +23,59 @@ pub enum UpdateCellIndexOperation {
 }
 
 #[derive(Debug, Clone, Reflect)]
-pub struct PuzzleCellSelection {
-    #[reflect(ignore)]
-    pub enabled: FixedBitSet,
+pub enum PuzzleCellSelection {
+    Enabled(#[reflect(ignore)] FixedBitSet),
+    Solo { width: usize, index: usize },
 }
 
 impl PuzzleCellSelection {
     pub fn new(enabled: FixedBitSet) -> Self {
-        PuzzleCellSelection { enabled }
+        PuzzleCellSelection::Enabled(enabled)
+    }
+
+    pub fn enabled(&self, index: usize) -> bool {
+        use PuzzleCellSelection::*;
+        match self {
+            Enabled(s) => s.contains(index),
+            &Solo { index: i, .. } => index == i,
+        }
+    }
+
+    pub fn is_solo(&self, index: usize) -> bool {
+        use PuzzleCellSelection::*;
+        match self {
+            Enabled(s) => s.contains(index) && s.count_ones(..) == 1,
+            &Solo { index: i, .. } => index == i,
+        }
+    }
+
+    pub fn width(&self) -> usize {
+        use PuzzleCellSelection::*;
+        match self {
+            Enabled(s) => s.len(),
+            &Solo { width, .. } => width,
+        }
     }
 
     pub fn apply(&mut self, index: usize, op: UpdateCellIndexOperation) {
         use UpdateCellIndexOperation::*;
-        match op {
-            Clear => self.enabled.remove(index),
-            Set => self.enabled.insert(index),
-            Toggle => self.enabled.toggle(index),
-            Solo => {
-                self.enabled.remove_range(..);
-                self.enabled.insert(index);
+        if let Solo = op {
+            let width = self.width();
+            *self = PuzzleCellSelection::Solo { width, index };
+            return;
+        }
+        match self {
+            PuzzleCellSelection::Enabled(enabled) => match op {
+                Clear => enabled.remove(index),
+                Set => enabled.insert(index),
+                Toggle => enabled.toggle(index),
+                Solo => unreachable!(),
+            },
+            &mut PuzzleCellSelection::Solo { width, index: i } => {
+                let mut enabled = FixedBitSet::with_capacity(width);
+                enabled.insert(i);
+                *self = PuzzleCellSelection::Enabled(enabled);
+                self.apply(index, op);
             }
         }
     }

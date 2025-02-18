@@ -201,10 +201,10 @@ where
             .permutations(2)
             .filter_map(move |locs| {
                 let &[&loc1, &loc2] = &locs[..] else {
-                    return None;
+                    unreachable!();
                 };
-                if !(self.when_fn)(self.resolver.puzzle, loc1)
-                    && (self.when_fn)(self.resolver.puzzle, loc2)
+                if dbg!(!(self.when_fn)(self.resolver.puzzle, dbg!(loc1)))
+                    && dbg!((self.when_fn)(self.resolver.puzzle, dbg!(loc2)))
                 {
                     return Some(then_fn(loc1));
                 }
@@ -225,10 +225,19 @@ impl PuzzleClue for SameColumnClue {
         for sub_resolver in resolver.iter_cols() {
             // info!("  sub_resolver: {sub_resolver:?}");
             for ev in sub_resolver
-                .when(|p, l| !p.cell_selection(l.loc).enabled.contains(l.index))
+                .when(|p, l| !p.cell_selection(l.loc).enabled(l.index))
                 .then(|index| UpdateCellIndex {
                     index,
                     op: UpdateCellIndexOperation::Clear,
+                })
+            {
+                return Some(ev);
+            }
+            for ev in sub_resolver
+                .when(|p, l| p.cell_selection(l.loc).is_solo(l.index))
+                .then(|index| UpdateCellIndex {
+                    index,
+                    op: UpdateCellIndexOperation::Solo,
                 })
             {
                 return Some(ev);
@@ -324,6 +333,31 @@ impl AdjacentColumnClue {
 
 impl PuzzleClue for AdjacentColumnClue {
     fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance {
+        let mut resolver = ImplicationResolver::new(puzzle);
+        resolver.add_loc(self.loc1);
+        resolver.add_loc(self.loc2);
+        info!("resolver: {resolver:?}");
+        for sub_resolver in resolver.iter_cols() {
+            info!("  sub_resolver: {sub_resolver:?}");
+            for ev in sub_resolver
+                .when(|p, l| !p.cell_selection(l.loc).enabled(l.index))
+                .then(|index| UpdateCellIndex {
+                    index,
+                    op: UpdateCellIndexOperation::Clear,
+                })
+            {
+                return Some(ev);
+            }
+            for ev in sub_resolver
+                .when(|p, l| !p.cell_selection(l.loc).is_solo(l.index))
+                .then(|index| UpdateCellIndex {
+                    index,
+                    op: UpdateCellIndexOperation::Solo,
+                })
+            {
+                return Some(ev);
+            }
+        }
         None
     }
 
