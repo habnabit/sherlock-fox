@@ -378,7 +378,6 @@ fn spawn_row(
                     op: UpdateCellIndexOperation::Solo,
                 });
             }
-            config.timer = Timer::new(Duration::from_secs_f32(0.5), TimerMode::Repeating);
             // let (cluebox, cluebox_fit) = q_cluebox.single();
             let Some(clue): Option<Handle<DynPuzzleClue>> = (try {
                 match rng.0.random_range(0..3) {
@@ -955,6 +954,7 @@ fn show_clues(
         info!("next from {clue:?} => {next:?}");
         if let Some(next) = next {
             to_enact = Some(next);
+            break;
         }
     }
     if let Some(ev) = to_enact {
@@ -1190,7 +1190,7 @@ fn setup(mut commands: Commands, mut animation_graphs: ResMut<Assets<AnimationGr
     commands.spawn(Camera2d);
     commands.spawn((Puzzle::default(), PuzzleClues::default()));
     commands.insert_resource(PuzzleSpawn {
-        timer: Timer::new(Duration::from_secs_f32(0.1), TimerMode::Repeating),
+        timer: Timer::new(Duration::from_secs_f32(0.05), TimerMode::Repeating),
         show_clues: 10,
     });
     commands

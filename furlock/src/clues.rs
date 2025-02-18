@@ -76,7 +76,7 @@ impl SameColumnClue {
             cell_nr,
         };
         let row2 = rows.next()?;
-        let row3 = if false && rng.random_ratio(1, 3) {
+        let row3 = if rng.random_ratio(1, 3) {
             rows.next()
         } else {
             None
@@ -101,34 +101,137 @@ impl SameColumnClue {
     }
 }
 
+#[derive(Clone)]
+struct ImplicationResolver<'p> {
+    puzzle: &'p Puzzle,
+    cells: Vec<CellLocIndex>,
+}
+
+impl<'p> std::fmt::Debug for ImplicationResolver<'p> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImplicationResolver")
+            .field("puzzle", &(self.puzzle as *const Puzzle as usize))
+            .field("cells", &self.cells)
+            .finish()
+    }
+}
+
+struct ImplicationWidth {
+    min: usize,
+    max: usize,
+    cellspan: usize,
+}
+
+impl<'p> ImplicationResolver<'p> {
+    fn new(puzzle: &'p Puzzle) -> Self {
+        ImplicationResolver {
+            puzzle,
+            cells: Vec::default(),
+        }
+    }
+
+    fn add_loc(&mut self, loc: CellLoc) {
+        let index = self.puzzle.cell_answer_index(loc);
+        self.cells.push(CellLocIndex { loc, index });
+    }
+
+    fn width(&self) -> ImplicationWidth {
+        use itertools::{Itertools, MinMaxResult::*};
+        let (min, max) = match self
+            .cells
+            .iter()
+            .map(
+                |CellLocIndex {
+                     loc: CellLoc { cell_nr, .. },
+                     ..
+                 }| *cell_nr,
+            )
+            .minmax()
+        {
+            OneElement(c) => (c, c),
+            MinMax(a, b) => (a, b),
+            NoElements => unreachable!(),
+        };
+        ImplicationWidth {
+            min,
+            max,
+            cellspan: max - min,
+        }
+    }
+
+    fn iter_cols(&self) -> impl Iterator<Item = ImplicationResolver> {
+        let width = self.width();
+        (0..self.puzzle.max_column - width.cellspan).map(move |offset| {
+            let mut cells = self.cells.clone();
+            for cell in &mut cells {
+                cell.loc.cell_nr = cell.loc.cell_nr + offset - width.min;
+            }
+            ImplicationResolver { cells, ..*self }
+        })
+    }
+
+    fn when<'r, W: Fn(&Puzzle, CellLocIndex) -> bool>(
+        &'r self,
+        when_fn: W,
+    ) -> ImplicationBuilder<'r, W> {
+        ImplicationBuilder {
+            resolver: self,
+            when_fn,
+        }
+    }
+}
+
+struct ImplicationBuilder<'r, W> {
+    resolver: &'r ImplicationResolver<'r>,
+    when_fn: W,
+}
+
+impl<'r, W> ImplicationBuilder<'r, W>
+where
+    W: Fn(&Puzzle, CellLocIndex) -> bool,
+{
+    fn then<'s: 'r, R, T: Fn(CellLocIndex) -> R + 'r>(
+        &'s self,
+        then_fn: T,
+    ) -> impl Iterator<Item = R> + 'r {
+        use itertools::Itertools;
+        self.resolver
+            .cells
+            .iter()
+            .permutations(2)
+            .filter_map(move |locs| {
+                let &[&loc1, &loc2] = &locs[..] else {
+                    return None;
+                };
+                if !(self.when_fn)(self.resolver.puzzle, loc1)
+                    && (self.when_fn)(self.resolver.puzzle, loc2)
+                {
+                    return Some(then_fn(loc1));
+                }
+                None
+            })
+    }
+}
+
 impl PuzzleClue for SameColumnClue {
     fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance {
-        let answer1 = puzzle.cell_answer_index(self.loc);
-        let loc2 = self.loc2();
-        let answer2 = puzzle.cell_answer_index(loc2);
-        for cell_nr in 0..puzzle.max_column {
-            let this_loc1 = CellLoc { cell_nr, ..self.loc };
-            let this_selection1 = puzzle.cell_selection(this_loc1);
-            let has1 = this_selection1.enabled.contains(answer1);
-            let this_loc2 = CellLoc { cell_nr, ..loc2 };
-            let this_selection2 = puzzle.cell_selection(this_loc2);
-            let has2 = this_selection2.enabled.contains(answer2);
-            if has1 && !has2 {
-                return Some(UpdateCellIndex {
-                    index: CellLocIndex {
-                        loc: this_loc1,
-                        index: answer1,
-                    },
-                    op: UpdateCellIndexOperation::Clear
-                });
-            } else if has2 && !has1 {
-                return Some(UpdateCellIndex {
-                    index: CellLocIndex {
-                        loc: this_loc2,
-                        index: answer2,
-                    },
-                    op: UpdateCellIndexOperation::Clear
-                });
+        let mut resolver = ImplicationResolver::new(puzzle);
+        resolver.add_loc(self.loc);
+        resolver.add_loc(self.loc2());
+        if let Some(loc3) = self.loc3() {
+            resolver.add_loc(loc3);
+        }
+        // info!("resolver: {resolver:?}");
+        for sub_resolver in resolver.iter_cols() {
+            // info!("  sub_resolver: {sub_resolver:?}");
+            for ev in sub_resolver
+                .when(|p, l| !p.cell_selection(l.loc).enabled.contains(l.index))
+                .then(|index| UpdateCellIndex {
+                    index,
+                    op: UpdateCellIndexOperation::Clear,
+                })
+            {
+                return Some(ev);
             }
         }
         None
