@@ -14,7 +14,7 @@ impl CellLoc {
         CellLoc { cell_nr, ..*self }
     }
 
-    pub fn reflect_about(&self, mirror: CellLoc) -> CellLoc {
+    pub fn reflect_about(&self, mirror: &CellLoc) -> CellLoc {
         let shift = (mirror.cell_nr as isize - self.cell_nr as isize) * 2;
         self.shift(shift)
     }
@@ -34,9 +34,9 @@ impl CellLocIndex {
         }
     }
 
-    pub fn reflect_loc_about(&self, mirror: CellLocIndex) -> CellLocIndex {
+    pub fn reflect_loc_about(&self, mirror: &CellLocIndex) -> CellLocIndex {
         CellLocIndex {
-            loc: self.loc.reflect_about(mirror.loc),
+            loc: self.loc.reflect_about(&mirror.loc),
             ..*self
         }
     }
