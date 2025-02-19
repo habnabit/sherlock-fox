@@ -135,21 +135,6 @@ impl SelectionProxy {
     fn is_enabled_not_solo(&self) -> bool {
         self.is_enabled && !self.is_solo
     }
-
-    fn as_update(&self, op: UpdateCellIndexOperation) -> UpdateCellIndex {
-        UpdateCellIndex {
-            index: self.index_,
-            op,
-        }
-    }
-
-    fn clear(&self) -> UpdateCellIndex {
-        self.as_update(UpdateCellIndexOperation::Clear)
-    }
-
-    fn solo(&self) -> UpdateCellIndex {
-        self.as_update(UpdateCellIndexOperation::Solo)
-    }
 }
 
 impl std::ops::Deref for SelectionProxy {
@@ -375,14 +360,14 @@ impl PuzzleClue for SameColumnClue {
                 })
                 .if_then(|Loc2 { loc1: l1, loc2: l2 }| {
                     if l1.is_enabled_not_solo() && l2.is_solo {
-                        Some(l1.solo())
+                        Some(l1.as_solo())
                     } else {
                         None
                     }
                 })
                 .if_then(|Loc2 { loc1: l1, loc2: l2 }| {
                     if l1.is_enabled_not_solo() && !l2.is_enabled {
-                        Some(l1.clear())
+                        Some(l1.as_clear())
                     } else {
                         None
                     }
@@ -493,7 +478,7 @@ impl PuzzleClue for AdjacentColumnClue {
                         // info!("checking adjacent solo\n  l1={l1:?}\n  l2={l2:?}  \n  l3={l2p:?}");
                         return None;
                         if l1.is_enabled_not_solo() && (l2.is_solo || l2p.is_solo) {
-                            Some(l1.solo())
+                            Some(l1.as_solo())
                         } else {
                             None
                         }
@@ -509,7 +494,7 @@ impl PuzzleClue for AdjacentColumnClue {
                         //     "checking adjacent enabled\n  l1={l1:?}\n  l2={l2:?}  \n  l3={l2p:?}"
                         // );
                         if l1.is_enabled_not_solo() && !l2.is_enabled && !l2p.is_enabled {
-                            Some(l1.clear())
+                            Some(l1.as_clear())
                         } else {
                             None
                         }
@@ -614,7 +599,7 @@ impl PuzzleClue for BetweenColumnsClue {
                 if l.loc1.is_enabled_not_solo()
                     && l.both_3s(|sl| !sl.loc2.is_enabled || !sl.loc3.is_enabled)
                 {
-                    Some(l.loc1.clear())
+                    Some(l.loc1.as_clear())
                 } else {
                     None
                 }

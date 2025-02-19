@@ -1,6 +1,11 @@
-use bevy::prelude::*;
+use bevy::{
+    prelude::*,
+    utils::{HashMap, HashSet},
+};
 use fixedbitset::FixedBitSet;
 use rand::{seq::SliceRandom, Rng};
+
+use crate::UpdateCellIndex;
 
 #[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CellLoc {
@@ -39,6 +44,18 @@ impl CellLocIndex {
             loc: self.loc.reflect_about(&mirror.loc),
             ..*self
         }
+    }
+
+    fn as_update(&self, op: UpdateCellIndexOperation) -> UpdateCellIndex {
+        UpdateCellIndex { index: *self, op }
+    }
+
+    pub fn as_clear(&self) -> UpdateCellIndex {
+        self.as_update(UpdateCellIndexOperation::Clear)
+    }
+
+    pub fn as_solo(&self) -> UpdateCellIndex {
+        self.as_update(UpdateCellIndexOperation::Solo)
     }
 }
 
@@ -116,29 +133,63 @@ impl PuzzleCellSelection {
         }
     }
 
-    pub fn apply(&mut self, index: usize, op: UpdateCellIndexOperation) {
+    pub fn count_ones(&self) -> usize {
+        use PuzzleCellSelection::*;
+        match self {
+            Enabled(s) => s.count_ones(..),
+            Solo { .. } => 1,
+            Void => 0,
+        }
+    }
+
+    pub fn iter_ones(&self) -> Box<dyn Iterator<Item = usize> + '_> {
+        use PuzzleCellSelection::*;
+        match self {
+            Enabled(s) => Box::new(s.ones()),
+            &Solo { index, .. } => Box::new(std::iter::once(index)),
+            Void => Box::new(std::iter::empty()),
+        }
+    }
+
+    pub fn apply(&mut self, index: usize, op: UpdateCellIndexOperation) -> usize {
         use UpdateCellIndexOperation::*;
         if self.is_void() {
             warn!("logic error: tried to apply {op:?}@{index} to void selection");
-            return;
+            return 0;
         }
         if let Solo = op {
             let width = self.width();
+            let ret = self
+                .count_ones()
+                .saturating_add_signed(if self.is_enabled(index) { -1 } else { 1 });
             *self = PuzzleCellSelection::Solo { width, index };
-            return;
+            return ret;
         }
         match self {
             PuzzleCellSelection::Enabled(enabled) => match op {
-                Clear => enabled.remove(index),
-                Set => enabled.insert(index),
-                Toggle => enabled.toggle(index),
+                Clear => {
+                    let ret = if enabled.contains(index) { 1 } else { 0 };
+                    enabled.remove(index);
+                    ret
+                }
+                Set => {
+                    if enabled.put(index) {
+                        0
+                    } else {
+                        1
+                    }
+                }
+                Toggle => {
+                    enabled.toggle(index);
+                    1
+                }
                 Solo => unreachable!(),
             },
             &mut PuzzleCellSelection::Solo { width, index: i } => {
                 let mut enabled = FixedBitSet::with_capacity(width);
                 enabled.insert(i);
                 *self = PuzzleCellSelection::Enabled(enabled);
-                self.apply(index, op);
+                return self.apply(index, op);
             }
             PuzzleCellSelection::Void => unreachable!(),
         }
@@ -273,5 +324,102 @@ impl Puzzle {
     // TODO: too many `as usize`
     pub fn cell_answer_index(&self, loc: CellLoc) -> usize {
         self.rows[loc.row_nr].cell_answers[loc.cell_nr as usize]
+    }
+
+    fn one_inference_step(
+        &mut self,
+        to_update: &mut HashSet<CellLoc>,
+        considering: &mut HashSet<CellLoc>,
+    ) -> usize {
+        #[derive(Debug)]
+        enum SoloInf {
+            None,
+            One(CellLocIndex),
+            Many,
+        }
+
+        impl SoloInf {
+            fn insert(&mut self, index: CellLocIndex) {
+                *self = match self {
+                    SoloInf::None => SoloInf::One(index),
+                    _ => SoloInf::Many,
+                };
+            }
+
+            fn drain_into(self, into: &mut HashMap<usize, HashSet<CellLocIndex>>) {
+                if let SoloInf::One(index) = self {
+                    into.entry(index.loc.row_nr).or_default().insert(index);
+                }
+            }
+        }
+
+        let rows = considering
+            .drain()
+            .map(|l| l.row_nr)
+            .collect::<HashSet<_>>();
+        let mut updates = 0;
+        let mut did_update = |c: usize| {
+            updates += c;
+            c > 0
+        };
+        let mut solo_ops = HashMap::new();
+        for row_nr in rows {
+            let mut counts = HashMap::new();
+            for cell_nr in 0..self.max_column as isize {
+                let loc = CellLoc { row_nr, cell_nr };
+                let mut cell_inf = SoloInf::None;
+                for index in self.cell_selection(loc).iter_ones() {
+                    let cell_index = CellLocIndex { loc, index };
+                    counts
+                        .entry(index)
+                        .or_insert(SoloInf::None)
+                        .insert(cell_index);
+                    cell_inf.insert(cell_index);
+                }
+                // info!("cell_inf @r{row_nr}xc{cell_nr}: {cell_inf:#?}");
+                cell_inf.drain_into(&mut solo_ops);
+            }
+            // info!("counts @r{row_nr}: {counts:#?}");
+            for inf in counts.into_values() {
+                inf.drain_into(&mut solo_ops);
+            }
+        }
+        // info!("solo ops: {solo_ops:#?}");
+        for (row_nr, solos) in solo_ops {
+            for cell_nr in 0..self.max_column as isize {
+                let loc = CellLoc { row_nr, cell_nr };
+                let sel = self.cell_selection_mut(loc);
+                for solo_index in &solos {
+                    let op = if loc == solo_index.loc {
+                        UpdateCellIndexOperation::Solo
+                    } else {
+                        UpdateCellIndexOperation::Clear
+                    };
+                    if did_update(sel.apply(solo_index.index, op)) {
+                        considering.insert(loc);
+                        to_update.insert(loc);
+                    }
+                }
+            }
+        }
+        // info!("updates: {updates}");
+        updates
+    }
+
+    pub fn run_inference(&mut self, to_update: &mut HashSet<CellLoc>) -> usize {
+        let mut considering = to_update.clone();
+        let mut updates = 0;
+        let mut steps = 0;
+        while !considering.is_empty() {
+            info!(
+                "running inference to_update hwm {} considering hwm {}",
+                to_update.len(),
+                considering.len()
+            );
+            updates += self.one_inference_step(to_update, &mut considering);
+            steps += 1;
+            info!("ran inference step {steps}, {updates} updates");
+        }
+        updates
     }
 }
