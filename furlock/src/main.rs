@@ -370,7 +370,7 @@ fn spawn_row(
             config.show_clues -= 1;
             if config.show_clues == 0 {
                 let row_nr = rng.0.random_range(0..puzzle.rows.len());
-                let cell_nr = rng.0.random_range(0..puzzle.max_column);
+                let cell_nr = rng.0.random_range(0..puzzle.max_column) as isize;
                 let loc = CellLoc { row_nr, cell_nr };
                 let index = puzzle.cell_answer_index(loc);
                 update_cell_writer.send(UpdateCellIndex {
@@ -381,9 +381,9 @@ fn spawn_row(
             // let (cluebox, cluebox_fit) = q_cluebox.single();
             let Some(clue): Option<Handle<DynPuzzleClue>> = (try {
                 match rng.0.random_range(0..3) {
-                    _ => clue_assets.add(AdjacentColumnClue::new_random(&mut rng.0, &puzzle)?),
-                    _ => clue_assets.add(BetweenColumnsClue::new_random(&mut rng.0, &puzzle)?),
                     0 => clue_assets.add(SameColumnClue::new_random(&mut rng.0, &puzzle)?),
+                    1 => clue_assets.add(BetweenColumnsClue::new_random(&mut rng.0, &puzzle)?),
+                    2 => clue_assets.add(AdjacentColumnClue::new_random(&mut rng.0, &puzzle)?),
                     _ => unreachable!(),
                 }
             }) else {
@@ -536,7 +536,7 @@ fn add_row(
                     RowAnimationBundle::new(matrix),
                 ))
                 .with_children(|row_spawner| {
-                    for cell_nr in 0..ev.len {
+                    for cell_nr in 0..ev.len as isize {
                         let loc = CellLoc { row_nr, cell_nr };
                         let graph = AnimationGraph::new();
                         let cell_player = row_spawner
@@ -1100,7 +1100,7 @@ fn cell_update(
     }
     // TODO: move inference
     for index in solo_to_scan {
-        for cell_nr in 0..puzzle.max_column {
+        for cell_nr in 0..puzzle.max_column as isize {
             if cell_nr == index.loc.cell_nr {
                 continue;
             }
@@ -1218,7 +1218,7 @@ fn setup(mut commands: Commands, mut animation_graphs: ResMut<Assets<AnimationGr
     commands.spawn((Puzzle::default(), PuzzleClues::default()));
     commands.insert_resource(PuzzleSpawn {
         timer: Timer::new(Duration::from_secs_f32(0.05), TimerMode::Repeating),
-        show_clues: 1,
+        show_clues: 10,
     });
     commands
         .spawn((DisplayPuzzle, FitWithinBundle::new()))

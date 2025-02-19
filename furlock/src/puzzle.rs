@@ -5,10 +5,10 @@ use rand::{seq::SliceRandom, Rng};
 #[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CellLoc {
     pub row_nr: usize,
-    pub cell_nr: usize,
+    pub cell_nr: isize,
 }
 
-pub const VOID_CELL: usize = usize::MAX;
+pub const VOID_CELL: isize = isize::MIN;
 
 impl CellLoc {
     pub fn is_void(&self) -> bool {
@@ -215,46 +215,53 @@ impl Puzzle {
     }
 
     pub fn cell_selection(&self, loc: CellLoc) -> &PuzzleCellSelection {
-        self.rows[loc.row_nr]
-            .cell_selection
-            .get(loc.cell_nr)
-            .unwrap_or(&self.void)
+        let sel: Option<&PuzzleCellSelection> = try {
+            self.rows[loc.row_nr]
+                .cell_selection
+                .get::<usize>(loc.cell_nr.try_into().ok()?)?
+        };
+        sel.unwrap_or(&self.void)
     }
 
     pub fn cell_selection_mut(&mut self, loc: CellLoc) -> &mut PuzzleCellSelection {
-        self.rows[loc.row_nr]
-            .cell_selection
-            .get_mut(loc.cell_nr)
-            .unwrap_or(&mut self.void)
+        let sel: Option<&mut PuzzleCellSelection> = try {
+            self.rows[loc.row_nr]
+                .cell_selection
+                .get_mut::<usize>(loc.cell_nr.try_into().ok()?)?
+        };
+        sel.unwrap_or(&mut self.void)
     }
 
+    // TODO: too many `as usize`
     pub fn cell_display(&self, loc: CellLoc) -> (Sprite, Color) {
         let row = &self.rows[loc.row_nr];
         (
-            row.display_sprite(loc.cell_nr),
-            row.display_color(loc.cell_nr),
+            row.display_sprite(loc.cell_nr as usize),
+            row.display_color(loc.cell_nr as usize),
         )
     }
 
+    // TODO: too many `as usize`
     pub fn cell_answer_display(&self, loc: CellLoc) -> (Sprite, Color) {
         let row = &self.rows[loc.row_nr];
         (
-            row.answer_display_sprite(loc.cell_nr),
-            row.answer_display_color(loc.cell_nr),
+            row.answer_display_sprite(loc.cell_nr as usize),
+            row.answer_display_color(loc.cell_nr as usize),
         )
     }
 
+    // TODO: too many `as usize`
     pub fn cell_answer_index(&self, loc: CellLoc) -> usize {
-        self.rows[loc.row_nr].cell_answers[loc.cell_nr]
+        self.rows[loc.row_nr].cell_answers[loc.cell_nr as usize]
     }
 
     pub fn shift_loc(&self, loc: CellLoc, shift: isize) -> CellLoc {
-        let cell_nr: isize = loc.cell_nr as isize + shift;
-        let cell_nr = if cell_nr < 0 || cell_nr >= self.max_column as isize {
-            VOID_CELL
-        } else {
-            cell_nr as usize
-        };
+        let cell_nr = loc.cell_nr + shift;
+        // let cell_nr = if cell_nr < 0 || cell_nr >= self.max_column as isize {
+        //     VOID_CELL
+        // } else {
+        //     cell_nr
+        // };
         CellLoc { cell_nr, ..loc }
     }
 

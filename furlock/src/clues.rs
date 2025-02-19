@@ -70,7 +70,7 @@ impl SameColumnClue {
         let n_rows = puzzle.rows.len();
         let mut rows = rand::seq::index::sample(rng, n_rows, n_rows).into_iter();
         let first_row = rows.next()?;
-        let cell_nr = rng.random_range(0..puzzle.max_column);
+        let cell_nr = rng.random_range(0..puzzle.max_column) as isize;
         let loc = CellLoc {
             row_nr: first_row,
             cell_nr,
@@ -150,8 +150,8 @@ impl<W, R> std::fmt::Debug for ImplicationAction<W, R> {
 
 #[derive(Debug, Clone, Copy)]
 struct ImplicationWidth {
-    min: usize,
-    max: usize,
+    min: isize,
+    max: isize,
     cellspan: usize,
 }
 
@@ -181,14 +181,13 @@ impl<'p, W, R> ImplicationResolver<'p, W, R> {
         ImplicationWidth {
             min,
             max,
-            cellspan: max - min,
+            cellspan: max.abs_diff(min),
         }
     }
 
     fn iter_all_cols<U, S>(&self) -> impl Iterator<Item = ImplicationResolver<U, S>> {
         let width = self.width();
-        (0..self.puzzle.max_column).map(move |offset| {
-            let shift = offset as isize - width.min as isize;
+        (-(width.cellspan as isize)..self.puzzle.max_column as isize).map(move |shift| {
             let cells = self
                 .cells
                 .iter()
@@ -204,10 +203,10 @@ impl<'p, W, R> ImplicationResolver<'p, W, R> {
 
     fn iter_cols<U, S>(&self) -> impl Iterator<Item = ImplicationResolver<U, S>> {
         let width = self.width();
-        (0..self.puzzle.max_column - width.cellspan).map(move |offset| {
+        (0..(self.puzzle.max_column - width.cellspan) as isize).map(move |offset| {
             let mut cells = self.cells.clone();
             for cell in &mut cells {
-                cell.loc.cell_nr = cell.loc.cell_nr + offset - width.min;
+                cell.loc.cell_nr += offset - width.min;
             }
             ImplicationResolver {
                 cells,
@@ -457,11 +456,11 @@ impl AdjacentColumnClue {
         Some(AdjacentColumnClue {
             loc1: CellLoc {
                 row_nr: rng.random_range(0..n_rows),
-                cell_nr: col1,
+                cell_nr: col1 as isize,
             },
             loc2: CellLoc {
                 row_nr: rng.random_range(0..n_rows),
-                cell_nr: col2,
+                cell_nr: col2 as isize,
             },
         })
     }
@@ -605,15 +604,15 @@ impl BetweenColumnsClue {
         Some(BetweenColumnsClue {
             loc1: CellLoc {
                 row_nr: rng.random_range(0..n_rows),
-                cell_nr: col1,
+                cell_nr: col1 as isize,
             },
             loc2: CellLoc {
                 row_nr: rng.random_range(0..n_rows),
-                cell_nr: col2,
+                cell_nr: col2 as isize,
             },
             loc3: CellLoc {
                 row_nr: rng.random_range(0..n_rows),
-                cell_nr: col3,
+                cell_nr: col3 as isize,
             },
         })
     }
@@ -626,7 +625,7 @@ impl PuzzleClue for BetweenColumnsClue {
         resolver.add_loc(self.loc2);
         resolver.add_loc(self.loc3);
         info!("between resolver: {resolver:?}");
-        for mut sub_resolver in resolver.iter_cols() {
+        for mut sub_resolver in resolver.iter_all_cols() {
             info!("between sub resolver: {sub_resolver:?}");
             sub_resolver
                 .when3(|p, l1, l2, l3| {
