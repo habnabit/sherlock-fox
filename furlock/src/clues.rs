@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use rand::Rng;
 
 use crate::{
-    puzzle::{CellLoc, CellLocIndex, Puzzle, PuzzleCellSelection, UpdateCellIndexOperation},
+    puzzle::{CellLoc, CellLocIndex, Puzzle, UpdateCellIndexOperation},
     UpdateCellIndex,
 };
 
@@ -10,7 +10,6 @@ pub type PuzzleAdvance = Option<UpdateCellIndex>;
 
 pub trait PuzzleClue: std::fmt::Debug {
     fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance;
-    fn display(&self);
     fn spawn_into<'s, 'p: 's>(
         &'s self,
         puzzle: &'p Puzzle,
@@ -20,12 +19,6 @@ pub trait PuzzleClue: std::fmt::Debug {
 #[derive(Reflect, Asset, Debug)]
 #[reflect(from_reflect = false)]
 pub struct DynPuzzleClue(#[reflect(ignore)] Box<(dyn PuzzleClue + Sync + Send + 'static)>);
-
-// impl std::fmt::Debug for DynPuzzleClue {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         f.debug_tuple("DynPuzzleClue").finish()
-//     }
-// }
 
 impl FromReflect for DynPuzzleClue {
     fn from_reflect(reflect: &dyn PartialReflect) -> Option<Self> {
@@ -297,7 +290,7 @@ impl<'p, R> ImplicationResolver<'p, IfThen<Loc2, R>> {
                     unreachable!()
                 };
                 let loc = Loc2 { loc1, loc2 };
-                info!("incoming perm 2:\n  loc={loc:?}");
+                // info!("incoming perm 2:\n  loc={loc:?}");
                 actions_iter.clone().filter_map(move |a| (a)(&loc))
             })
     }
@@ -319,7 +312,7 @@ impl<'p, R> ImplicationResolver<'p, IfThen<Loc2Mirrored, R>> {
                 let loc2_p = proxy(loc2.reflect_loc_about(&loc1));
                 Loc2Mirrored { loc1, loc2, loc2_p }
             })
-            .inspect(|l| info!("incoming reflected 2:\n  loc={l:?}",))
+            // .inspect(|l| info!("incoming reflected 2:\n  loc={l:?}",))
             .filter(|l| !l.loc1.is_void)
             .collect::<Vec<_>>();
         let actions_iter = self.actions.iter();
@@ -353,7 +346,7 @@ impl<'p, R> ImplicationResolver<'p, IfThen<Loc3Mirrored, R>> {
                     loc3_p,
                 }
             })
-            .inspect(|l| info!("incoming reflected 3:\n  loc={l:#?}",))
+            // .inspect(|l| info!("incoming reflected 3:\n  loc={l:#?}",))
             .filter(|l| !l.loc1.is_void)
             .collect::<Vec<_>>();
 
@@ -372,7 +365,6 @@ impl PuzzleClue for SameColumnClue {
         if let Some(loc3) = self.loc3() {
             resolver.add_loc(loc3);
         }
-        // info!("resolver: {resolver:?}");
         for mut sub_resolver in resolver.iter_all_cols::<IfThen<_, _>>() {
             sub_resolver
                 .if_then(|Loc2 { loc1: l1, loc2: l2 }| {
@@ -395,30 +387,11 @@ impl PuzzleClue for SameColumnClue {
                         None
                     }
                 });
-            // .when2(|p, l1, l2| p.is_enabled_not_solo(l1) && p.is_solo(l2))
-            // .then2(|index| )
-            // .when2(|p, l1, l2| p.is_enabled_not_solo(l1) && !p.is_enabled(l2))
-            // .then2(|index| );
             for ev in sub_resolver.iter_perm_2s() {
                 return Some(ev);
             }
-            // info!("  sub_resolver: {sub_resolver:?}");
-            // for ev in sub_resolver
-            //     .when_solo()
-            //     .then_solo()
-            //     .chain(sub_resolver.when_disabled().then_disable())
-            // {
-            //     return Some(ev);
-            // }
-            // for loc in sub_resolver.when_enabled().then(|loc| loc) {
-            //     info!("!! contradiction !! @{loc:?}");
-            // }
         }
         None
-    }
-
-    fn display(&self) {
-        todo!()
     }
 
     fn spawn_into<'s, 'p: 's>(
@@ -507,19 +480,17 @@ impl PuzzleClue for AdjacentColumnClue {
         let mut resolver = ImplicationResolver::new_unit(puzzle);
         resolver.add_loc(self.loc1);
         resolver.add_loc(self.loc2);
-        info!("adjacent resolver: {resolver:#?}");
+        // info!("adjacent resolver: {resolver:#?}");
         for mut sub_resolver in resolver.iter_all_cols::<IfThen<_, _>>() {
-            info!("adjacent sub resolver: {sub_resolver:#?}");
+            // info!("adjacent sub resolver: {sub_resolver:#?}");
             sub_resolver
-                // .when2(|p, l1, l2| !p.is_enabled(l1) && p.is_solo(l2))
-                // .then(|index| panic!("contradiction at {index:?}"))
                 .if_then(
                     |Loc2Mirrored {
                          loc1: l1,
                          loc2: l2,
                          loc2_p: l2p,
                      }| {
-                        info!("checking adjacent solo\n  l1={l1:?}\n  l2={l2:?}  \n  l3={l2p:?}");
+                        // info!("checking adjacent solo\n  l1={l1:?}\n  l2={l2:?}  \n  l3={l2p:?}");
                         return None;
                         if l1.is_enabled_not_solo() && (l2.is_solo || l2p.is_solo) {
                             Some(l1.solo())
@@ -534,9 +505,9 @@ impl PuzzleClue for AdjacentColumnClue {
                          loc2: l2,
                          loc2_p: l2p,
                      }| {
-                        info!(
-                            "checking adjacent enabled\n  l1={l1:?}\n  l2={l2:?}  \n  l3={l2p:?}"
-                        );
+                        // info!(
+                        //     "checking adjacent enabled\n  l1={l1:?}\n  l2={l2:?}  \n  l3={l2p:?}"
+                        // );
                         if l1.is_enabled_not_solo() && !l2.is_enabled && !l2p.is_enabled {
                             Some(l1.clear())
                         } else {
@@ -544,52 +515,11 @@ impl PuzzleClue for AdjacentColumnClue {
                         }
                     },
                 );
-            // .then3(|index| );
             for ev in sub_resolver.iter_reflected_2s() {
                 return Some(ev);
             }
-            // info!("  sub_resolver: {sub_resolver:?}");
-            // for ev in sub_resolver
-            //     .when_solo()
-            //     .then_solo()
-            //     .chain(sub_resolver.when_disabled().then_disable())
-            // {
-            //     return Some(ev);
-            // }
-            // for loc in sub_resolver.when_enabled().then(|loc| loc) {
-            //     info!("!! contradiction !! @{loc:?}");
-            // }
         }
-        // let mut resolver = ImplicationResolver::new(puzzle);
-        // resolver.add_loc(self.loc1);
-        // resolver.add_loc(self.loc2);
-        // // info!("resolver: {resolver:?}");
-        // for sub_resolver in resolver.iter_cols() {
-        //     // info!("  sub_resolver: {sub_resolver:?}");
-        //     // for ev in sub_resolver
-        //     //     .when(|p, l| !p.cell_selection(l.loc).is_enabled(l.index))
-        //     //     .then(|index| UpdateCellIndex {
-        //     //         index,
-        //     //         op: UpdateCellIndexOperation::Clear,
-        //     //     })
-        //     // {
-        //     //     return Some(ev);
-        //     // }
-        //     // for ev in sub_resolver
-        //     //     .when(|p, l| !p.cell_selection(l.loc).is_solo(l.index))
-        //     //     .then(|index| UpdateCellIndex {
-        //     //         index,
-        //     //         op: UpdateCellIndexOperation::Solo,
-        //     //     })
-        //     // {
-        //     //     return Some(ev);
-        //     // }
-        // }
         None
-    }
-
-    fn display(&self) {
-        todo!()
     }
 
     fn spawn_into<'s, 'p: 's>(
@@ -676,41 +606,24 @@ impl PuzzleClue for BetweenColumnsClue {
         resolver.add_loc(self.loc1);
         resolver.add_loc(self.loc2);
         resolver.add_loc(self.loc3);
-        info!("between resolver: {resolver:?}");
+        // info!("between resolver: {resolver:?}");
         for mut sub_resolver in resolver.iter_all_cols::<IfThen<_, _>>() {
-            info!("between sub resolver: {sub_resolver:?}");
+            // info!("between sub resolver: {sub_resolver:?}");
             sub_resolver.if_then(|l: &Loc3Mirrored| {
-                info!("checking between\n l={l:#?}");
+                // info!("checking between\n l={l:#?}");
                 if l.loc1.is_enabled_not_solo()
                     && l.both_3s(|sl| !sl.loc2.is_enabled || !sl.loc3.is_enabled)
-                // !((l1.is_enabled && l3.is_enabled) || (l1p.is_enabled && l3p.is_enabled))
                 {
                     Some(l.loc1.clear())
                 } else {
                     None
                 }
             });
-            // .then3(|index| panic!("contradiction at {index:?}"));
             for ev in sub_resolver.iter_reflected_3s() {
                 return Some(ev);
             }
-            // info!("  sub_resolver: {sub_resolver:?}");
-            // for ev in sub_resolver
-            //     .when_solo()
-            //     .then_solo()
-            //     .chain(sub_resolver.when_disabled().then_disable())
-            // {
-            //     return Some(ev);
-            // }
-            // for loc in sub_resolver.when_enabled().then(|loc| loc) {
-            //     info!("!! contradiction !! @{loc:?}");
-            // }
         }
         None
-    }
-
-    fn display(&self) {
-        todo!()
     }
 
     fn spawn_into<'s, 'p: 's>(
