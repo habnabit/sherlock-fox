@@ -274,37 +274,4 @@ impl Puzzle {
     pub fn cell_answer_index(&self, loc: CellLoc) -> usize {
         self.rows[loc.row_nr].cell_answers[loc.cell_nr as usize]
     }
-
-    pub fn shift_loc(&self, loc: CellLoc, shift: isize) -> CellLoc {
-        let cell_nr = loc.cell_nr + shift;
-        // let cell_nr = if cell_nr < 0 || cell_nr >= self.max_column as isize {
-        //     VOID_CELL
-        // } else {
-        //     cell_nr
-        // };
-        CellLoc { cell_nr, ..loc }
-    }
-
-    pub fn shift_loc_index(&self, index: CellLocIndex, shift: isize) -> CellLocIndex {
-        CellLocIndex {
-            loc: self.shift_loc(index.loc, shift),
-            ..index
-        }
-    }
-
-    pub fn reflect_loc_about(&self, loc: CellLoc, mirror: CellLoc) -> CellLoc {
-        let shift = dbg!((mirror.cell_nr as isize - loc.cell_nr as isize) * 2);
-        dbg!(self.shift_loc(loc, shift))
-    }
-
-    pub fn reflect_loc_index_about(
-        &self,
-        index: CellLocIndex,
-        mirror: CellLocIndex,
-    ) -> CellLocIndex {
-        CellLocIndex {
-            loc: self.reflect_loc_about(index.loc, mirror.loc),
-            ..index
-        }
-    }
 }
