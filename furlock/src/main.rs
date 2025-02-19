@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: EUPL-1.2
 
-#![feature(try_blocks)]
+#![feature(try_blocks, cmp_minmax)]
 
 mod clues;
 mod puzzle;
@@ -381,9 +381,9 @@ fn spawn_row(
             // let (cluebox, cluebox_fit) = q_cluebox.single();
             let Some(clue): Option<Handle<DynPuzzleClue>> = (try {
                 match rng.0.random_range(0..3) {
-                    0 => clue_assets.add(SameColumnClue::new_random(&mut rng.0, &puzzle)?),
                     _ => clue_assets.add(AdjacentColumnClue::new_random(&mut rng.0, &puzzle)?),
-                    2 => clue_assets.add(BetweenColumnsClue::new_random(&mut rng.0, &puzzle)?),
+                    _ => clue_assets.add(BetweenColumnsClue::new_random(&mut rng.0, &puzzle)?),
+                    0 => clue_assets.add(SameColumnClue::new_random(&mut rng.0, &puzzle)?),
                     _ => unreachable!(),
                 }
             }) else {
@@ -1218,7 +1218,7 @@ fn setup(mut commands: Commands, mut animation_graphs: ResMut<Assets<AnimationGr
     commands.spawn((Puzzle::default(), PuzzleClues::default()));
     commands.insert_resource(PuzzleSpawn {
         timer: Timer::new(Duration::from_secs_f32(0.05), TimerMode::Repeating),
-        show_clues: 10,
+        show_clues: 1,
     });
     commands
         .spawn((DisplayPuzzle, FitWithinBundle::new()))

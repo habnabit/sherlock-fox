@@ -185,6 +185,23 @@ impl<'p, W, R> ImplicationResolver<'p, W, R> {
         }
     }
 
+    fn iter_all_cols<U, S>(&self) -> impl Iterator<Item = ImplicationResolver<U, S>> {
+        let width = self.width();
+        (0..self.puzzle.max_column).map(move |offset| {
+            let shift = offset as isize - width.min as isize;
+            let cells = self
+                .cells
+                .iter()
+                .map(|&c| self.puzzle.shift_loc_index(c, shift))
+                .collect();
+            ImplicationResolver {
+                cells,
+                actions: Vec::default(),
+                puzzle: self.puzzle,
+            }
+        })
+    }
+
     fn iter_cols<U, S>(&self) -> impl Iterator<Item = ImplicationResolver<U, S>> {
         let width = self.width();
         (0..self.puzzle.max_column - width.cellspan).map(move |offset| {
@@ -202,7 +219,7 @@ impl<'p, W, R> ImplicationResolver<'p, W, R> {
 }
 
 impl<'p, R> ImplicationResolver<'p, When2, R> {
-    fn when2<'r: 'p>(&'r mut self, when_fn: When2) -> ImplicationBuilder<'r, When2, R> {
+    fn when2(&mut self, when_fn: When2) -> ImplicationBuilder<'p, '_, When2, R> {
         ImplicationBuilder {
             resolver: self,
             when_fn,
@@ -221,7 +238,7 @@ impl<'p, R> ImplicationResolver<'p, When2, R> {
     //     self.when(|p, l| p.cell_selection(l.loc).is_solo(l.index))
     // }
 
-    fn iter_perm_2s(&mut self) -> impl Iterator<Item = R> + use<'_, R> {
+    fn iter_perm_2s(&self) -> impl Iterator<Item = R> + use<'_, R> {
         use itertools::Itertools;
         let proxy = PuzzleProxy(self.puzzle);
         let actions_iter = self.actions.iter();
@@ -241,21 +258,46 @@ impl<'p, R> ImplicationResolver<'p, When2, R> {
 }
 
 impl<'p, R> ImplicationResolver<'p, When3, R> {
-    fn when3<'r: 'p>(&'r mut self, when_fn: When3) -> ImplicationBuilder<'r, When3, R> {
+    fn when3(&mut self, when_fn: When3) -> ImplicationBuilder<'p, '_, When3, R> {
         ImplicationBuilder {
             resolver: self,
             when_fn,
         }
     }
 
-    fn iter_reflected_3s(&mut self) -> impl Iterator<Item = R> + use<'_, R> {
+    fn iter_reflected_2s(&self) -> impl Iterator<Item = R> + use<'_, R> {
         use itertools::Itertools;
+        let proxy = PuzzleProxy(self.puzzle);
+        let actions_iter = self.actions.iter();
+        self.cells
+            .iter()
+            .permutations(2)
+            .filter(|locs| !locs[0].loc.is_void())
+            .flat_map(move |locs| {
+                let &[&loc1, &loc2] = &locs[..] else {
+                    unreachable!();
+                };
+                let loc2_p = self.puzzle.reflect_loc_index_about(loc2, loc1);
+                actions_iter.clone().filter_map(move |a| {
+                    if (a.when_fn)(proxy, loc2_p, loc1, loc2) {
+                        Some((a.then_fn)(loc1))
+                    } else {
+                        None
+                    }
+                })
+            })
+    }
+
+    fn iter_reflected_3s(&self) -> impl Iterator<Item = R> + use<'_, R> {
         let proxy = PuzzleProxy(self.puzzle);
         let actions_iter = self.actions.iter();
         let &[loc1, loc2, loc3] = &self.cells[..] else {
             unreachable!();
         };
-        vec![(loc1, loc2, loc3)]
+        let mut loc1_p = self.puzzle.reflect_loc_index_about(loc1, loc2);
+        let mut loc3_p = self.puzzle.reflect_loc_index_about(loc3, loc2);
+        std::mem::swap(&mut loc1_p.loc.cell_nr, &mut loc3_p.loc.cell_nr);
+        vec![(loc1, loc2, loc3), (loc1_p, loc2, loc3_p)]
             .into_iter()
             .flat_map(move |(loc1, loc2, loc3)| {
                 actions_iter.clone().filter_map(move |a| {
@@ -269,13 +311,13 @@ impl<'p, R> ImplicationResolver<'p, When3, R> {
     }
 }
 
-struct ImplicationBuilder<'r, W, R> {
-    resolver: &'r mut ImplicationResolver<'r, W, R>,
+struct ImplicationBuilder<'p, 'r, W, R> {
+    resolver: &'r mut ImplicationResolver<'p, W, R>,
     when_fn: W,
 }
 
-impl<'r, W, R> ImplicationBuilder<'r, W, R> {
-    fn then(self, then_fn: Then<R>) -> &'r mut ImplicationResolver<'r, W, R> {
+impl<'p, 'r, W, R> ImplicationBuilder<'p, 'r, W, R> {
+    fn then(self, then_fn: Then<R>) -> &'r mut ImplicationResolver<'p, W, R> {
         let action = ImplicationAction {
             when_fn: self.when_fn,
             then_fn,
@@ -309,7 +351,7 @@ impl PuzzleClue for SameColumnClue {
         }
         // info!("resolver: {resolver:?}");
         for mut sub_resolver in resolver.iter_cols() {
-            let sub_resolver = sub_resolver
+            sub_resolver
                 .when2(|p, l1, l2| !p.is_enabled(l1) && p.is_solo(l2))
                 .then(|index| panic!("contradiction at {index:?}"))
                 .when2(|p, l1, l2| p.is_enabled_not_solo(l1) && p.is_solo(l2))
@@ -430,22 +472,29 @@ impl PuzzleClue for AdjacentColumnClue {
         let mut resolver = ImplicationResolver::new_unit(puzzle);
         resolver.add_loc(self.loc1);
         resolver.add_loc(self.loc2);
-        // info!("resolver: {resolver:?}");
-        for mut sub_resolver in resolver.iter_cols() {
-            let sub_resolver = sub_resolver
-                .when2(|p, l1, l2| !p.is_enabled(l1) && p.is_solo(l2))
-                .then(|index| panic!("contradiction at {index:?}"))
-                .when2(|p, l1, l2| p.is_enabled_not_solo(l1) && p.is_solo(l2))
+        info!("adjacent resolver: {resolver:#?}");
+        for mut sub_resolver in resolver.iter_all_cols() {
+            info!("adjacent sub resolver: {sub_resolver:#?}");
+            sub_resolver
+                // .when2(|p, l1, l2| !p.is_enabled(l1) && p.is_solo(l2))
+                // .then(|index| panic!("contradiction at {index:?}"))
+                .when3(|p, l1, l2, l3| {
+                    info!("checking adjacent solo\n  l1={l1:?}\n  l2={l2:?}  \n  l3={l3:?}");
+                    p.is_enabled_not_solo(l2) && (p.is_solo(l1) || p.is_solo(l3))
+                })
                 .then(|index| UpdateCellIndex {
                     index,
                     op: UpdateCellIndexOperation::Solo,
                 })
-                .when2(|p, l1, l2| p.is_enabled_not_solo(l1) && !p.is_enabled(l2))
+                .when3(|p, l1, l2, l3| {
+                    info!("checking adjacent enabled\n  l1={l1:?}\n  l2={l2:?}  \n  l3={l3:?}");
+                    p.is_enabled_not_solo(l2) && !p.is_enabled(l1) && !p.is_enabled(l3)
+                })
                 .then(|index| UpdateCellIndex {
                     index,
                     op: UpdateCellIndexOperation::Clear,
                 });
-            for ev in sub_resolver.iter_perm_2s() {
+            for ev in sub_resolver.iter_reflected_2s() {
                 return Some(ev);
             }
             // info!("  sub_resolver: {sub_resolver:?}");
@@ -572,6 +621,34 @@ impl BetweenColumnsClue {
 
 impl PuzzleClue for BetweenColumnsClue {
     fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance {
+        let mut resolver = ImplicationResolver::new_unit(puzzle);
+        resolver.add_loc(self.loc1);
+        resolver.add_loc(self.loc2);
+        resolver.add_loc(self.loc3);
+        info!("between resolver: {resolver:?}");
+        for mut sub_resolver in resolver.iter_cols() {
+            info!("between sub resolver: {sub_resolver:?}");
+            sub_resolver
+                .when3(|p, l1, l2, l3| {
+                    info!("checking between {l1:?} {l2:?} {l3:?}");
+                    false
+                })
+                .then(|index| panic!("contradiction at {index:?}"));
+            for ev in sub_resolver.iter_reflected_3s() {
+                return Some(ev);
+            }
+            // info!("  sub_resolver: {sub_resolver:?}");
+            // for ev in sub_resolver
+            //     .when_solo()
+            //     .then_solo()
+            //     .chain(sub_resolver.when_disabled().then_disable())
+            // {
+            //     return Some(ev);
+            // }
+            // for loc in sub_resolver.when_enabled().then(|loc| loc) {
+            //     info!("!! contradiction !! @{loc:?}");
+            // }
+        }
         None
     }
 

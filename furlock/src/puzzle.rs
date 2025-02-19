@@ -8,6 +8,14 @@ pub struct CellLoc {
     pub cell_nr: usize,
 }
 
+pub const VOID_CELL: usize = usize::MAX;
+
+impl CellLoc {
+    pub fn is_void(&self) -> bool {
+        self.cell_nr == VOID_CELL
+    }
+}
+
 #[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CellLocIndex {
     pub loc: CellLoc,
@@ -26,6 +34,13 @@ pub enum UpdateCellIndexOperation {
 pub enum PuzzleCellSelection {
     Enabled(#[reflect(ignore)] FixedBitSet),
     Solo { width: usize, index: usize },
+    Void,
+}
+
+impl Default for PuzzleCellSelection {
+    fn default() -> Self {
+        PuzzleCellSelection::Void
+    }
 }
 
 impl PuzzleCellSelection {
@@ -33,11 +48,16 @@ impl PuzzleCellSelection {
         PuzzleCellSelection::Enabled(enabled)
     }
 
+    pub fn is_void(&self) -> bool {
+        matches!(self, PuzzleCellSelection::Void)
+    }
+
     pub fn is_enabled(&self, index: usize) -> bool {
         use PuzzleCellSelection::*;
         match self {
             Enabled(s) => s.contains(index),
             &Solo { index: i, .. } => index == i,
+            Void => false,
         }
     }
 
@@ -46,6 +66,7 @@ impl PuzzleCellSelection {
         match self {
             Enabled(s) => s.contains(index) && s.count_ones(..) == 1,
             &Solo { index: i, .. } => index == i,
+            Void => false,
         }
     }
 
@@ -62,6 +83,7 @@ impl PuzzleCellSelection {
                 }
             }
             &Solo { index, .. } => Some(index),
+            Void => None,
         }
     }
 
@@ -70,11 +92,16 @@ impl PuzzleCellSelection {
         match self {
             Enabled(s) => s.len(),
             &Solo { width, .. } => width,
+            Void => 0,
         }
     }
 
     pub fn apply(&mut self, index: usize, op: UpdateCellIndexOperation) {
         use UpdateCellIndexOperation::*;
+        if self.is_void() {
+            warn!("logic error: tried to apply {op:?}@{index} to void selection");
+            return;
+        }
         if let Solo = op {
             let width = self.width();
             *self = PuzzleCellSelection::Solo { width, index };
@@ -93,6 +120,7 @@ impl PuzzleCellSelection {
                 *self = PuzzleCellSelection::Enabled(enabled);
                 self.apply(index, op);
             }
+            PuzzleCellSelection::Void => unreachable!(),
         }
     }
 }
@@ -176,6 +204,8 @@ impl PuzzleRow {
 pub struct Puzzle {
     pub rows: Vec<PuzzleRow>,
     pub max_column: usize,
+    // happily, the default is Void
+    void: PuzzleCellSelection,
 }
 
 impl Puzzle {
@@ -185,11 +215,17 @@ impl Puzzle {
     }
 
     pub fn cell_selection(&self, loc: CellLoc) -> &PuzzleCellSelection {
-        &self.rows[loc.row_nr].cell_selection[loc.cell_nr]
+        self.rows[loc.row_nr]
+            .cell_selection
+            .get(loc.cell_nr)
+            .unwrap_or(&self.void)
     }
 
     pub fn cell_selection_mut(&mut self, loc: CellLoc) -> &mut PuzzleCellSelection {
-        &mut self.rows[loc.row_nr].cell_selection[loc.cell_nr]
+        self.rows[loc.row_nr]
+            .cell_selection
+            .get_mut(loc.cell_nr)
+            .unwrap_or(&mut self.void)
     }
 
     pub fn cell_display(&self, loc: CellLoc) -> (Sprite, Color) {
@@ -210,5 +246,42 @@ impl Puzzle {
 
     pub fn cell_answer_index(&self, loc: CellLoc) -> usize {
         self.rows[loc.row_nr].cell_answers[loc.cell_nr]
+    }
+
+    pub fn shift_loc(&self, loc: CellLoc, shift: isize) -> CellLoc {
+        let cell_nr: isize = loc.cell_nr as isize + shift;
+        let cell_nr = if cell_nr < 0 || cell_nr >= self.max_column as isize {
+            VOID_CELL
+        } else {
+            cell_nr as usize
+        };
+        CellLoc { cell_nr, ..loc }
+    }
+
+    pub fn shift_loc_index(&self, index: CellLocIndex, shift: isize) -> CellLocIndex {
+        CellLocIndex {
+            loc: self.shift_loc(index.loc, shift),
+            ..index
+        }
+    }
+
+    pub fn reflect_loc_about(&self, loc: CellLoc, mirror: CellLoc) -> CellLoc {
+        assert!(!mirror.is_void());
+        if loc.is_void() {
+            return loc;
+        }
+        let shift = dbg!((mirror.cell_nr as isize - loc.cell_nr as isize) * 2);
+        dbg!(self.shift_loc(loc, shift))
+    }
+
+    pub fn reflect_loc_index_about(
+        &self,
+        index: CellLocIndex,
+        mirror: CellLocIndex,
+    ) -> CellLocIndex {
+        CellLocIndex {
+            loc: self.reflect_loc_about(index.loc, mirror.loc),
+            ..index
+        }
     }
 }
