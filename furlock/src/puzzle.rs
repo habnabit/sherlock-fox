@@ -8,11 +8,15 @@ pub struct CellLoc {
     pub cell_nr: isize,
 }
 
-pub const VOID_CELL: isize = isize::MIN;
-
 impl CellLoc {
-    pub fn is_void(&self) -> bool {
-        self.cell_nr == VOID_CELL
+    pub fn shift(&self, shift: isize) -> CellLoc {
+        let cell_nr = self.cell_nr + shift;
+        CellLoc { cell_nr, ..*self }
+    }
+
+    pub fn reflect_about(&self, mirror: CellLoc) -> CellLoc {
+        let shift = (mirror.cell_nr as isize - self.cell_nr as isize) * 2;
+        self.shift(shift)
     }
 }
 
@@ -20,6 +24,22 @@ impl CellLoc {
 pub struct CellLocIndex {
     pub loc: CellLoc,
     pub index: usize,
+}
+
+impl CellLocIndex {
+    pub fn shift_loc(&self, shift: isize) -> CellLocIndex {
+        CellLocIndex {
+            loc: self.loc.shift(shift),
+            ..*self
+        }
+    }
+
+    pub fn reflect_loc_about(&self, mirror: CellLocIndex) -> CellLocIndex {
+        CellLocIndex {
+            loc: self.loc.reflect_about(mirror.loc),
+            ..*self
+        }
+    }
 }
 
 #[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,10 +293,6 @@ impl Puzzle {
     }
 
     pub fn reflect_loc_about(&self, loc: CellLoc, mirror: CellLoc) -> CellLoc {
-        assert!(!mirror.is_void());
-        if loc.is_void() {
-            return loc;
-        }
         let shift = dbg!((mirror.cell_nr as isize - loc.cell_nr as isize) * 2);
         dbg!(self.shift_loc(loc, shift))
     }

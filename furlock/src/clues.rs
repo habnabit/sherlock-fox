@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use rand::Rng;
 
 use crate::{
-    puzzle::{CellLoc, CellLocIndex, Puzzle, UpdateCellIndexOperation},
+    puzzle::{CellLoc, CellLocIndex, Puzzle, PuzzleCellSelection, UpdateCellIndexOperation},
     UpdateCellIndex,
 };
 
@@ -101,13 +101,13 @@ impl SameColumnClue {
     }
 }
 
-struct ImplicationResolver<'p, W, R> {
+struct ImplicationResolver<'p, IT> {
     puzzle: &'p Puzzle,
     cells: Vec<CellLocIndex>,
-    actions: Vec<ImplicationAction<W, R>>,
+    actions: Vec<ImplicationAction<IT>>,
 }
 
-impl<'p, W, R> std::fmt::Debug for ImplicationResolver<'p, W, R> {
+impl<'p, IT> std::fmt::Debug for ImplicationResolver<'p, IT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ImplicationResolver")
             .field("puzzle", &(self.puzzle as *const Puzzle as usize))
@@ -133,16 +133,45 @@ impl<'p> PuzzleProxy<'p> {
     }
 }
 
-type When2 = fn(PuzzleProxy, CellLocIndex, CellLocIndex) -> bool;
-type When3 = fn(PuzzleProxy, CellLocIndex, CellLocIndex, CellLocIndex) -> bool;
-type Then<R> = fn(CellLocIndex) -> R;
-
-struct ImplicationAction<W, R> {
-    when_fn: W,
-    then_fn: Then<R>,
+#[derive(Clone, Debug)]
+struct SelectionProxy {
+    index: CellLocIndex,
+    is_enabled: bool,
+    is_solo: bool,
+    is_void: bool,
 }
 
-impl<W, R> std::fmt::Debug for ImplicationAction<W, R> {
+impl SelectionProxy {
+    fn from_puzzle_and_index(puzzle: &Puzzle, index: CellLocIndex) -> Self {
+        let sel = puzzle.cell_selection(index.loc);
+        let is_enabled = sel.is_enabled(index.index);
+        let is_solo = sel.is_solo(index.index);
+        let is_void = sel.is_void();
+        SelectionProxy {
+            index,
+            is_enabled,
+            is_solo,
+            is_void,
+        }
+    }
+
+    fn is_enabled_not_solo(&self) -> bool {
+        self.is_enabled && !self.is_solo
+    }
+}
+
+type When2 = fn(&SelectionProxy, &SelectionProxy) -> bool;
+type When3 = fn(&SelectionProxy, &SelectionProxy, &SelectionProxy) -> bool;
+type Then2<R> = fn(&SelectionProxy, &SelectionProxy) -> R;
+type Then3<R> = fn(&SelectionProxy, &SelectionProxy, &SelectionProxy) -> R;
+type IfThen2<R> = fn(&SelectionProxy, &SelectionProxy) -> Option<R>;
+type IfThen3<R> = fn(&SelectionProxy, &SelectionProxy, &SelectionProxy) -> Option<R>;
+
+struct ImplicationAction<IT> {
+    if_then_fn: IT,
+}
+
+impl<IT> std::fmt::Debug for ImplicationAction<IT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ImplicationAction").finish()
     }
@@ -155,7 +184,7 @@ struct ImplicationWidth {
     cellspan: usize,
 }
 
-impl<'p> ImplicationResolver<'p, (), ()> {
+impl<'p> ImplicationResolver<'p, ()> {
     fn new_unit(puzzle: &'p Puzzle) -> Self {
         ImplicationResolver {
             puzzle,
@@ -165,7 +194,7 @@ impl<'p> ImplicationResolver<'p, (), ()> {
     }
 }
 
-impl<'p, W, R> ImplicationResolver<'p, W, R> {
+impl<'p, IT> ImplicationResolver<'p, IT> {
     fn add_loc(&mut self, loc: CellLoc) {
         let index = self.puzzle.cell_answer_index(loc);
         self.cells.push(CellLocIndex { loc, index });
@@ -185,7 +214,7 @@ impl<'p, W, R> ImplicationResolver<'p, W, R> {
         }
     }
 
-    fn iter_all_cols<U, S>(&self) -> impl Iterator<Item = ImplicationResolver<U, S>> {
+    fn iter_all_cols<IT2>(&self) -> impl Iterator<Item = ImplicationResolver<IT2>> {
         let width = self.width();
         (-(width.cellspan as isize)..self.puzzle.max_column as isize).map(move |shift| {
             let cells = self
@@ -201,7 +230,7 @@ impl<'p, W, R> ImplicationResolver<'p, W, R> {
         })
     }
 
-    fn iter_cols<U, S>(&self) -> impl Iterator<Item = ImplicationResolver<U, S>> {
+    fn iter_cols<IT2>(&self) -> impl Iterator<Item = ImplicationResolver<IT2>> {
         let width = self.width();
         (0..(self.puzzle.max_column - width.cellspan) as isize).map(move |offset| {
             let mut cells = self.cells.clone();
@@ -217,12 +246,10 @@ impl<'p, W, R> ImplicationResolver<'p, W, R> {
     }
 }
 
-impl<'p, R> ImplicationResolver<'p, When2, R> {
-    fn when2(&mut self, when_fn: When2) -> ImplicationBuilder<'p, '_, When2, R> {
-        ImplicationBuilder {
-            resolver: self,
-            when_fn,
-        }
+impl<'p, R> ImplicationResolver<'p, IfThen2<R>> {
+    fn if_then2(&mut self, if_then_fn: IfThen2<R>) -> &mut Self {
+        self.actions.push(ImplicationAction { if_then_fn });
+        self
     }
 
     // fn when_enabled(&self) -> ImplicationBuilder<impl Fn(&Puzzle, CellLocIndex) -> bool> {
@@ -239,106 +266,113 @@ impl<'p, R> ImplicationResolver<'p, When2, R> {
 
     fn iter_perm_2s(&self) -> impl Iterator<Item = R> + use<'_, R> {
         use itertools::Itertools;
-        let proxy = PuzzleProxy(self.puzzle);
+        let proxies = self
+            .cells
+            .iter()
+            .map(|&c| SelectionProxy::from_puzzle_and_index(self.puzzle, c))
+            .collect::<Vec<_>>();
         let actions_iter = self.actions.iter();
-        self.cells.iter().permutations(2).flat_map(move |locs| {
-            let &[&loc1, &loc2] = &locs[..] else {
-                unreachable!();
-            };
-            actions_iter.clone().filter_map(move |a| {
-                if (a.when_fn)(proxy, loc1, loc2) {
-                    Some((a.then_fn)(loc1))
-                } else {
-                    None
-                }
+        proxies
+            .into_iter()
+            .permutations(2)
+            .flat_map(move |mut sels| {
+                let (Some(s2), Some(s1)) = (sels.pop(), sels.pop()) else {
+                    unreachable!()
+                };
+                info!("incoming perm 2:\n  s1={s1:?}\n  s2={s2:?}");
+                actions_iter
+                    .clone()
+                    .filter_map(move |a| (a.if_then_fn)(&s1, &s2))
             })
-        })
     }
 }
 
-impl<'p, R> ImplicationResolver<'p, When3, R> {
-    fn when3(&mut self, when_fn: When3) -> ImplicationBuilder<'p, '_, When3, R> {
-        ImplicationBuilder {
-            resolver: self,
-            when_fn,
-        }
+impl<'p, R> ImplicationResolver<'p, IfThen3<R>> {
+    fn if_then3(&mut self, if_then_fn: IfThen3<R>) -> &mut Self {
+        self.actions.push(ImplicationAction { if_then_fn });
+        self
     }
 
     fn iter_reflected_2s(&self) -> impl Iterator<Item = R> + use<'_, R> {
         use itertools::Itertools;
-        let proxy = PuzzleProxy(self.puzzle);
-        let actions_iter = self.actions.iter();
-        self.cells
+        let proxy = |c| SelectionProxy::from_puzzle_and_index(self.puzzle, c);
+        let proxies = self
+            .cells
             .iter()
             .permutations(2)
-            .filter(|locs| !locs[0].loc.is_void())
-            .flat_map(move |locs| {
-                let &[&loc1, &loc2] = &locs[..] else {
-                    unreachable!();
+            .map(move |mut locs| {
+                let (Some(&loc2), Some(&loc1)) = (locs.pop(), locs.pop()) else {
+                    unreachable!()
                 };
-                let loc2_p = self.puzzle.reflect_loc_index_about(loc2, loc1);
-                actions_iter.clone().filter_map(move |a| {
-                    if (a.when_fn)(proxy, loc2_p, loc1, loc2) {
-                        Some((a.then_fn)(loc1))
-                    } else {
-                        None
-                    }
-                })
+                let loc2_p = loc2.reflect_loc_about(loc1);
+                (proxy(loc2_p), proxy(loc1), proxy(loc2))
             })
+            .inspect(|t| {
+                info!(
+                    "incoming reflected 2:\n  s1={:?}\n  s2={:?}\n  s3={:?}",
+                    t.0, t.1, t.2
+                )
+            })
+            .filter(|(_, s2, _)| !s2.is_void)
+            .collect::<Vec<_>>();
+        let actions_iter = self.actions.iter();
+        proxies.into_iter().flat_map(move |(s1, s2, s3)| {
+            actions_iter
+                .clone()
+                .filter_map(move |a| (a.if_then_fn)(&s1, &s2, &s3))
+        })
     }
 
     fn iter_reflected_3s(&self) -> impl Iterator<Item = R> + use<'_, R> {
-        let proxy = PuzzleProxy(self.puzzle);
-        let actions_iter = self.actions.iter();
-        let &[loc1, loc2, loc3] = &self.cells[..] else {
-            unreachable!();
-        };
-        let mut loc1_p = self.puzzle.reflect_loc_index_about(loc1, loc2);
-        let mut loc3_p = self.puzzle.reflect_loc_index_about(loc3, loc2);
-        std::mem::swap(&mut loc1_p.loc.cell_nr, &mut loc3_p.loc.cell_nr);
-        vec![(loc1, loc2, loc3), (loc1_p, loc2, loc3_p)]
-            .into_iter()
-            .flat_map(move |(loc1, loc2, loc3)| {
-                actions_iter.clone().filter_map(move |a| {
-                    if (a.when_fn)(proxy, loc1, loc2, loc3) {
-                        Some((a.then_fn)(loc1))
-                    } else {
-                        None
-                    }
-                })
-            })
+        vec![].into_iter()
+        // let proxy = PuzzleProxy(self.puzzle);
+        // let actions_iter = self.actions.iter();
+        // let &[loc1, loc2, loc3] = &self.cells[..] else {
+        //     unreachable!();
+        // };
+        // let mut loc1_p = self.puzzle.reflect_loc_index_about(loc1, loc2);
+        // let mut loc3_p = self.puzzle.reflect_loc_index_about(loc3, loc2);
+        // std::mem::swap(&mut loc1_p.loc.cell_nr, &mut loc3_p.loc.cell_nr);
+        // vec![(loc1, loc2, loc3), (loc1_p, loc2, loc3_p)]
+        //     .into_iter()
+        //     .flat_map(move |(loc1, loc2, loc3)| {
+        //         actions_iter.clone().filter_map(move |a| {
+        //             if (a.when_fn)(proxy, loc1, loc2, loc3) {
+        //                 Some((a.then_fn)(loc1))
+        //             } else {
+        //                 None
+        //             }
+        //         })
+        //     })
     }
 }
 
-struct ImplicationBuilder<'p, 'r, W, R> {
-    resolver: &'r mut ImplicationResolver<'p, W, R>,
-    when_fn: W,
-}
+// struct ImplicationBuilder<'p, 'r, IT> {
+//     resolver: &'r mut ImplicationResolver<'p, IT>,
+//     when_fn: Wh,
+// }
 
-impl<'p, 'r, W, R> ImplicationBuilder<'p, 'r, W, R> {
-    fn then(self, then_fn: Then<R>) -> &'r mut ImplicationResolver<'p, W, R> {
-        let action = ImplicationAction {
-            when_fn: self.when_fn,
-            then_fn,
-        };
-        self.resolver.actions.push(action);
-        self.resolver
-    }
+// impl<'p, 'r, R> ImplicationBuilder<'p, 'r, When2, Then2<R>> {
+//     fn then2(self, then_fn: Then2<R>) -> &'r mut ImplicationResolver<'p, When2, Then2<R>> {
+//         let action = ImplicationAction {
+//             when_fn: self.when_fn,
+//             then_fn,
+//         };
+//         self.resolver.actions.push(action);
+//         self.resolver
+//     }
+// }
 
-    // fn then_disable<'s: 'r>(&'s self) -> impl Iterator<Item = UpdateCellIndex> + 'r {
-    //     self.then(|index| UpdateCellIndex {
-    //         index,
-    //         op: UpdateCellIndexOperation::Clear,
-    //     })
-    // }
-
-    // fn then_solo<'s: 'r>(&'s self) -> impl Iterator<Item = UpdateCellIndex> + 'r {
-    //     self.then(|index| UpdateCellIndex {
-    //         index,
-    //         op: UpdateCellIndexOperation::Solo,
-    //     })
-    // }
-}
+// impl<'p, 'r, R> ImplicationBuilder<'p, 'r, When3, Then3<R>> {
+//     fn then3(self, then_fn: Then3<R>) -> &'r mut ImplicationResolver<'p, When3, Then3<R>> {
+//         let action = ImplicationAction {
+//             when_fn: self.when_fn,
+//             then_fn,
+//         };
+//         self.resolver.actions.push(action);
+//         self.resolver
+//     }
+// }
 
 impl PuzzleClue for SameColumnClue {
     fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance {
@@ -351,18 +385,36 @@ impl PuzzleClue for SameColumnClue {
         // info!("resolver: {resolver:?}");
         for mut sub_resolver in resolver.iter_cols() {
             sub_resolver
-                .when2(|p, l1, l2| !p.is_enabled(l1) && p.is_solo(l2))
-                .then(|index| panic!("contradiction at {index:?}"))
-                .when2(|p, l1, l2| p.is_enabled_not_solo(l1) && p.is_solo(l2))
-                .then(|index| UpdateCellIndex {
-                    index,
-                    op: UpdateCellIndexOperation::Solo,
+                .if_then2(|l1, l2| {
+                    if !l1.is_enabled && l2.is_solo {
+                        panic!("contradiction at {l1:?} {l2:?}");
+                    }
+                    None
                 })
-                .when2(|p, l1, l2| p.is_enabled_not_solo(l1) && !p.is_enabled(l2))
-                .then(|index| UpdateCellIndex {
-                    index,
-                    op: UpdateCellIndexOperation::Clear,
+                .if_then2(|l1, l2| {
+                    if l1.is_enabled_not_solo() && l2.is_solo {
+                        Some(UpdateCellIndex {
+                            index: l1.index,
+                            op: UpdateCellIndexOperation::Solo,
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .if_then2(|l1, l2| {
+                    if l1.is_enabled_not_solo() && !l2.is_enabled {
+                        Some(UpdateCellIndex {
+                            index: l1.index,
+                            op: UpdateCellIndexOperation::Clear,
+                        })
+                    } else {
+                        None
+                    }
                 });
+            // .when2(|p, l1, l2| p.is_enabled_not_solo(l1) && p.is_solo(l2))
+            // .then2(|index| )
+            // .when2(|p, l1, l2| p.is_enabled_not_solo(l1) && !p.is_enabled(l2))
+            // .then2(|index| );
             for ev in sub_resolver.iter_perm_2s() {
                 return Some(ev);
             }
@@ -477,22 +529,30 @@ impl PuzzleClue for AdjacentColumnClue {
             sub_resolver
                 // .when2(|p, l1, l2| !p.is_enabled(l1) && p.is_solo(l2))
                 // .then(|index| panic!("contradiction at {index:?}"))
-                .when3(|p, l1, l2, l3| {
+                .if_then3(|l1, l2, l3| {
                     info!("checking adjacent solo\n  l1={l1:?}\n  l2={l2:?}  \n  l3={l3:?}");
-                    p.is_enabled_not_solo(l2) && (p.is_solo(l1) || p.is_solo(l3))
+                    return None;
+                    if l2.is_enabled_not_solo() && (l1.is_solo || l3.is_solo) {
+                        Some(UpdateCellIndex {
+                            index: l2.index,
+                            op: UpdateCellIndexOperation::Solo,
+                        })
+                    } else {
+                        None
+                    }
                 })
-                .then(|index| UpdateCellIndex {
-                    index,
-                    op: UpdateCellIndexOperation::Solo,
-                })
-                .when3(|p, l1, l2, l3| {
+                .if_then3(|l1, l2, l3| {
                     info!("checking adjacent enabled\n  l1={l1:?}\n  l2={l2:?}  \n  l3={l3:?}");
-                    p.is_enabled_not_solo(l2) && !p.is_enabled(l1) && !p.is_enabled(l3)
-                })
-                .then(|index| UpdateCellIndex {
-                    index,
-                    op: UpdateCellIndexOperation::Clear,
+                    if l2.is_enabled_not_solo() && !l1.is_enabled && !l3.is_enabled {
+                        Some(UpdateCellIndex {
+                            index: l2.index,
+                            op: UpdateCellIndexOperation::Clear,
+                        })
+                    } else {
+                        None
+                    }
                 });
+            // .then3(|index| );
             for ev in sub_resolver.iter_reflected_2s() {
                 return Some(ev);
             }
@@ -627,12 +687,11 @@ impl PuzzleClue for BetweenColumnsClue {
         info!("between resolver: {resolver:?}");
         for mut sub_resolver in resolver.iter_all_cols() {
             info!("between sub resolver: {sub_resolver:?}");
-            sub_resolver
-                .when3(|p, l1, l2, l3| {
-                    info!("checking between {l1:?} {l2:?} {l3:?}");
-                    false
-                })
-                .then(|index| panic!("contradiction at {index:?}"));
+            sub_resolver.if_then3(|l1, l2, l3| {
+                info!("checking between {l1:?} {l2:?} {l3:?}");
+                None
+            });
+            // .then3(|index| panic!("contradiction at {index:?}"));
             for ev in sub_resolver.iter_reflected_3s() {
                 return Some(ev);
             }
