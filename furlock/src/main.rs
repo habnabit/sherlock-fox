@@ -172,7 +172,10 @@ fn show_clue_explanation(
         ))
         .with_children(|parent| {
             let explanation = q_clue.update.explanation.as_ref().map(|e| e.format());
-            parent.spawn(Text::new(format!("{:?}@{:#?}\n{:#?}", q_clue.update.op, q_clue.update.index, explanation)));
+            parent.spawn(Text::new(format!(
+                "{:?}@{:#?}\n{:#?}",
+                q_clue.update.op, q_clue.update.index, explanation
+            )));
             // parent.spawn(Text::new("text 1 "));
             // parent.spawn((Node {
             //     width: Val::Px(25.),

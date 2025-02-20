@@ -20,13 +20,17 @@ pub struct ClueExplanationPayload {
 
 impl Default for ClueExplanationPayload {
     fn default() -> Self {
-        Self { stored: ShareCloneMap::custom() }
+        Self {
+            stored: ShareCloneMap::custom(),
+        }
     }
 }
 
 impl std::fmt::Debug for ClueExplanationPayload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ClueExplanationPayload").field("stored", &self.stored.len()).finish()
+        f.debug_struct("ClueExplanationPayload")
+            .field("stored", &self.stored.len())
+            .finish()
     }
 }
 
@@ -54,7 +58,8 @@ pub struct ClueExplanation {
 impl ClueExplanation {
     pub fn format(&self) -> Vec<String> {
         use ClueExplanationChunk::*;
-        self.chunks.iter()
+        self.chunks
+            .iter()
             .map(|c| match c {
                 Text(s) => (*s).to_owned(),
                 Accessor(f) => f(&self.payload)
@@ -70,10 +75,7 @@ impl From<(&Loc2, &'static [ClueExplanationChunk])> for ClueExplanation {
     fn from((loc, chunks): (&Loc2, &'static [ClueExplanationChunk])) -> Self {
         let mut payload = ClueExplanationPayload::default();
         payload.stored.insert::<StoredItem<Loc2>>(loc.clone());
-        ClueExplanation {
-            chunks,
-            payload,
-        }
+        ClueExplanation { chunks, payload }
     }
 }
 
@@ -227,7 +229,10 @@ impl std::ops::Deref for SelectionProxy {
 
 impl CellDisplay for SelectionProxy {
     fn as_string(&self) -> String {
-        format!("Cell[r{} c{} i{}]", self.loc.row_nr, self.loc.cell_nr, self.index)
+        format!(
+            "Cell[r{} c{} i{}]",
+            self.loc.row_nr, self.loc.cell_nr, self.index
+        )
     }
 }
 
