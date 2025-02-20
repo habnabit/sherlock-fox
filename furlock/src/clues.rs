@@ -1,5 +1,6 @@
 use bevy::{prelude::*, utils::HashMap};
 use rand::Rng;
+use typemap::{ShareCloneMap, TypeMap};
 
 use crate::{
     puzzle::{CellLoc, CellLocIndex, Puzzle, UpdateCellIndexOperation},
@@ -8,41 +9,83 @@ use crate::{
 
 pub type PuzzleAdvance = Option<UpdateCellIndex>;
 
-#[derive(Debug, Reflect, Clone)]
-pub struct ClueExplanationPayload {}
+#[repr(transparent)]
+struct StoredItem<T>(T);
+
+#[derive(Clone)]
+pub struct ClueExplanationPayload {
+    // #[reflect(ignore)]
+    stored: typemap::ShareCloneMap,
+}
+
+impl Default for ClueExplanationPayload {
+    fn default() -> Self {
+        Self { stored: ShareCloneMap::custom() }
+    }
+}
+
+impl std::fmt::Debug for ClueExplanationPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClueExplanationPayload").field("stored", &self.stored.len()).finish()
+    }
+}
 
 impl ClueExplanationPayload {
-    pub fn lookup<T>(&self) -> &T {
-        todo!()
+    pub fn lookup<T: PayloadType>(&self) -> Option<&T> {
+        self.stored.get::<StoredItem<T>>()
     }
+}
+
+trait PayloadType: Send + Sync + Clone + 'static {}
+impl PayloadType for Loc2 {}
+
+impl<T: PayloadType> typemap::Key for StoredItem<T> {
+    type Value = T;
 }
 
 #[derive(Debug, Reflect, Clone)]
 pub struct ClueExplanation {
     #[reflect(ignore)]
     chunks: &'static [ClueExplanationChunk],
+    #[reflect(ignore)]
     payload: ClueExplanationPayload,
+}
+
+impl ClueExplanation {
+    pub fn format(&self) -> Vec<String> {
+        use ClueExplanationChunk::*;
+        self.chunks.iter()
+            .map(|c| match c {
+                Text(s) => (*s).to_owned(),
+                Accessor(f) => f(&self.payload)
+                    .map(|d| d.as_string())
+                    .unwrap_or_else(|| "<<<NONE>>>".to_owned()),
+                NamedCell(_) => todo!(),
+            })
+            .collect()
+    }
 }
 
 impl From<(&Loc2, &'static [ClueExplanationChunk])> for ClueExplanation {
     fn from((loc, chunks): (&Loc2, &'static [ClueExplanationChunk])) -> Self {
-        let mut named_cells = HashMap::new();
-        named_cells.insert("loc1", loc.loc1.clone());
-        named_cells.insert("loc2", loc.loc2.clone());
+        let mut payload = ClueExplanationPayload::default();
+        payload.stored.insert::<StoredItem<Loc2>>(loc.clone());
         ClueExplanation {
             chunks,
-            payload: ClueExplanationPayload {},
+            payload,
         }
     }
 }
 
-pub trait CellDisplay {}
+pub trait CellDisplay {
+    fn as_string(&self) -> String;
+}
 
 #[derive(Debug, Reflect, Clone, Copy)]
 pub enum ClueExplanationChunk {
     Text(&'static str),
     NamedCell(&'static str),
-    Accessor(fn(&ClueExplanationPayload) -> &dyn CellDisplay),
+    Accessor(fn(&ClueExplanationPayload) -> Option<&dyn CellDisplay>),
 }
 
 pub trait PuzzleClue: std::fmt::Debug {
@@ -179,6 +222,12 @@ impl std::ops::Deref for SelectionProxy {
 
     fn deref(&self) -> &Self::Target {
         &self.index_
+    }
+}
+
+impl CellDisplay for SelectionProxy {
+    fn as_string(&self) -> String {
+        format!("Cell[r{} c{} i{}]", self.loc.row_nr, self.loc.cell_nr, self.index)
     }
 }
 
@@ -379,26 +428,33 @@ impl<'p, R> ImplicationResolver<'p, IfThen<Loc3Mirrored, R>> {
     }
 }
 
+// fn f() {
+//     ClueExplanationChunk::Accessor(|p| &p.lookup::<Loc2>().loc1);
+// }
+
 macro_rules! explanation {
-    ( [] , $( $accum:tt )* ) => {
+    ( $typ:ty : [] , $( $accum:tt )* ) => {
         &[ $($accum)* ]
     };
-    ( [% { $name:ident } , $( $rest:tt )*] , $( $accum:tt )* ) => {
-        explanation!([$($rest)*] , $($accum)* ClueExplanationChunk::NamedCell(stringify!($name)), )
+    ( $typ:ty : [% { $name:ident } , $( $rest:tt )*] , $( $accum:tt )* ) => {
+        explanation!($typ: [$($rest)*] , $($accum)* ClueExplanationChunk::Accessor(|p| p.lookup::<$typ>().map(|x| &x.$name as &dyn CellDisplay)), )
+        // explanation!([$($rest)*] , $($accum)* ClueExplanationChunk::NamedCell(stringify!($name)), )
     };
-    ( [$text:expr , $( $rest:tt )*] , $( $accum:tt )* ) => {
-        explanation!([$($rest)*] , $($accum)* ClueExplanationChunk::Text($text), )
+    ( $typ:ty : [$text:expr , $( $rest:tt )*] , $( $accum:tt )* ) => {
+        explanation!($typ: [$($rest)*] , $($accum)* ClueExplanationChunk::Text($text), )
     };
-    ( $( $rest:tt )* ) => {
-        explanation!( [$($rest)*] , )
+    ( $typ:ty : $( $rest:tt )* ) => {
+        explanation!( $typ: [$($rest)*] , )
     };
 }
 
 static SAME_COLUMN_SOLO: &[ClueExplanationChunk] = explanation![
+    Loc2:
     %{loc2}, " is selected, therefore ", %{loc1}, " must be selected.",
 ];
 
 static SAME_COLUMN_CLEAR: &[ClueExplanationChunk] = explanation![
+    Loc2:
     %{loc2}, " is not possible, therefore ", %{loc1}, " must be impossible.",
 ];
 
