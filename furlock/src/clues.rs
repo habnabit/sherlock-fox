@@ -1,4 +1,4 @@
-use bevy::prelude::*;
+use bevy::{prelude::*, utils::HashMap};
 use rand::Rng;
 
 use crate::{
@@ -7,6 +7,43 @@ use crate::{
 };
 
 pub type PuzzleAdvance = Option<UpdateCellIndex>;
+
+#[derive(Debug, Reflect, Clone)]
+pub struct ClueExplanationPayload {}
+
+impl ClueExplanationPayload {
+    pub fn lookup<T>(&self) -> &T {
+        todo!()
+    }
+}
+
+#[derive(Debug, Reflect, Clone)]
+pub struct ClueExplanation {
+    #[reflect(ignore)]
+    chunks: &'static [ClueExplanationChunk],
+    payload: ClueExplanationPayload,
+}
+
+impl From<(&Loc2, &'static [ClueExplanationChunk])> for ClueExplanation {
+    fn from((loc, chunks): (&Loc2, &'static [ClueExplanationChunk])) -> Self {
+        let mut named_cells = HashMap::new();
+        named_cells.insert("loc1", loc.loc1.clone());
+        named_cells.insert("loc2", loc.loc2.clone());
+        ClueExplanation {
+            chunks,
+            payload: ClueExplanationPayload {},
+        }
+    }
+}
+
+pub trait CellDisplay {}
+
+#[derive(Debug, Reflect, Clone, Copy)]
+pub enum ClueExplanationChunk {
+    Text(&'static str),
+    NamedCell(&'static str),
+    Accessor(fn(&ClueExplanationPayload) -> &dyn CellDisplay),
+}
 
 pub trait PuzzleClue: std::fmt::Debug {
     fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance;
@@ -110,7 +147,7 @@ impl<'p, IT: std::fmt::Debug> std::fmt::Debug for ImplicationResolver<'p, IT> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Reflect, Debug)]
 struct SelectionProxy {
     index_: CellLocIndex,
     is_enabled: bool,
@@ -342,6 +379,35 @@ impl<'p, R> ImplicationResolver<'p, IfThen<Loc3Mirrored, R>> {
     }
 }
 
+macro_rules! explanation {
+    ( [] , $( $accum:tt )* ) => {
+        &[ $($accum)* ]
+    };
+    ( [% { $name:ident } , $( $rest:tt )*] , $( $accum:tt )* ) => {
+        explanation!([$($rest)*] , $($accum)* ClueExplanationChunk::NamedCell(stringify!($name)), )
+    };
+    ( [$text:expr , $( $rest:tt )*] , $( $accum:tt )* ) => {
+        explanation!([$($rest)*] , $($accum)* ClueExplanationChunk::Text($text), )
+    };
+    ( $( $rest:tt )* ) => {
+        explanation!( [$($rest)*] , )
+    };
+}
+
+static SAME_COLUMN_SOLO: &[ClueExplanationChunk] = explanation![
+    %{loc2}, " is selected, therefore ", %{loc1}, " must be selected.",
+];
+
+static SAME_COLUMN_CLEAR: &[ClueExplanationChunk] = explanation![
+    %{loc2}, " is not possible, therefore ", %{loc1}, " must be impossible.",
+];
+
+// trace_macros!(false);
+
+// static SAME_COLUMN_CLEAR: &[ClueExplanationChunk] = &[
+//     ClueExplanationChunk::Text("same column clear"),
+// ];
+
 impl PuzzleClue for SameColumnClue {
     fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance {
         let mut resolver = ImplicationResolver::new_unit(puzzle);
@@ -358,16 +424,16 @@ impl PuzzleClue for SameColumnClue {
                     }
                     None
                 })
-                .if_then(|Loc2 { loc1: l1, loc2: l2 }| {
-                    if l1.is_enabled_not_solo() && l2.is_solo {
-                        Some(l1.as_solo())
+                .if_then(|l: &Loc2| {
+                    if l.loc1.is_enabled_not_solo() && l.loc2.is_solo {
+                        Some(l.loc1.as_solo().with_explanation((l, SAME_COLUMN_SOLO)))
                     } else {
                         None
                     }
                 })
-                .if_then(|Loc2 { loc1: l1, loc2: l2 }| {
-                    if l1.is_enabled_not_solo() && !l2.is_enabled {
-                        Some(l1.as_clear())
+                .if_then(|l: &Loc2| {
+                    if l.loc1.is_enabled_not_solo() && !l.loc2.is_enabled {
+                        Some(l.loc1.as_clear().with_explanation((l, SAME_COLUMN_CLEAR)))
                     } else {
                         None
                     }

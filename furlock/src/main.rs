@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: EUPL-1.2
 
 #![feature(try_blocks, cmp_minmax)]
+#![feature(trace_macros)]
 
 mod clues;
 mod puzzle;
@@ -21,7 +22,10 @@ use bevy::{
     window::PrimaryWindow,
 };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
-use clues::{AdjacentColumnClue, BetweenColumnsClue, DynPuzzleClue, PuzzleClues, SameColumnClue};
+use clues::{
+    AdjacentColumnClue, BetweenColumnsClue, ClueExplanation, DynPuzzleClue, PuzzleClues,
+    SameColumnClue,
+};
 use petgraph::graph::NodeIndex;
 use puzzle::{
     CellLoc, CellLocIndex, Puzzle, PuzzleCellDisplay, PuzzleCellSelection, PuzzleRow,
@@ -37,9 +41,10 @@ use uuid::Uuid;
 
 fn main() {
     App::new()
+        .add_plugins(DefaultPlugins)
         .init_resource::<Assets<DynPuzzleClue>>()
         .init_resource::<SeededRng>()
-        .add_plugins(DefaultPlugins)
+        .init_state::<ClueExplanationState>()
         // .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddClue>()
         .add_event::<AddRow>()
@@ -109,6 +114,8 @@ fn main() {
                 add_clue,
             ),
         )
+        .add_systems(OnEnter(ClueExplanationState::Shown), show_clue_explanation)
+        .add_systems(OnExit(ClueExplanationState::Shown), hide_clue_explanation)
         .run();
 }
 
@@ -128,6 +135,54 @@ impl FromWorld for SeededRng {
         SeededRng(ChaCha8Rng::from_os_rng())
     }
 }
+
+#[derive(States, Default, Debug, Clone, PartialEq, Eq, Hash)]
+enum ClueExplanationState {
+    #[default]
+    NotShown,
+    Shown,
+}
+
+#[derive(Debug, Component, Reflect)]
+struct ExplainClueComponent {
+    clue: Handle<DynPuzzleClue>,
+    update: UpdateCellIndex,
+}
+
+fn show_clue_explanation(
+    mut commands: Commands,
+    q_clue: Single<&ExplainClueComponent>,
+    clues: Res<Assets<DynPuzzleClue>>,
+) {
+    let Some(clue) = clues.get(q_clue.clue.id()) else {
+        return;
+    };
+    commands
+        .spawn((
+            Node {
+                top: Val::Px(0.),
+                left: Val::Px(0.),
+                width: Val::Percent(100.),
+                height: Val::Percent(100.),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..Default::default()
+            },
+            BackgroundColor(Color::hsla(0., 0., 0.5, 0.5)),
+        ))
+        .with_children(|parent| {
+            parent.spawn(Text::new(format!("{:#?}", q_clue.update)));
+            // parent.spawn(Text::new("text 1 "));
+            // parent.spawn((Node {
+            //     width: Val::Px(25.),
+            //     height: Val::Px(25.),
+            //     ..Default::default()
+            // }, BackgroundColor(Color::hsla(0., 1., 0.8, 1.))));
+            // parent.spawn(Text::new(" text 2"));
+        });
+}
+
+fn hide_clue_explanation() {}
 
 #[derive(Debug, Component, Reflect)]
 struct PuzzleClueComponent(Handle<DynPuzzleClue>);
@@ -319,10 +374,18 @@ struct AddClue {
     clue: Handle<DynPuzzleClue>,
 }
 
-#[derive(Event, Debug)]
+#[derive(Event, Debug, Reflect)]
 struct UpdateCellIndex {
     index: CellLocIndex,
     op: UpdateCellIndexOperation,
+    explanation: Option<ClueExplanation>,
+}
+
+impl UpdateCellIndex {
+    fn with_explanation(mut self, explanation: impl Into<ClueExplanation>) -> Self {
+        self.explanation = Some(explanation.into());
+        self
+    }
 }
 
 #[derive(Event, Debug)]
@@ -379,12 +442,13 @@ fn spawn_row(
                 update_cell_writer.send(UpdateCellIndex {
                     index: CellLocIndex { loc, index },
                     op: UpdateCellIndexOperation::Solo,
+                    explanation: None,
                 });
             }
             // let (cluebox, cluebox_fit) = q_cluebox.single();
             let Some(clue): Option<Handle<DynPuzzleClue>> = (try {
                 match rng.0.random_range(0..3) {
-                    0 => clue_assets.add(SameColumnClue::new_random(&mut rng.0, &puzzle)?),
+                    _ => clue_assets.add(SameColumnClue::new_random(&mut rng.0, &puzzle)?),
                     1 => clue_assets.add(BetweenColumnsClue::new_random(&mut rng.0, &puzzle)?),
                     2 => clue_assets.add(AdjacentColumnClue::new_random(&mut rng.0, &puzzle)?),
                     _ => unreachable!(),
@@ -805,7 +869,7 @@ fn fit_inside_cell(
     let mut current_x = fit.min.x;
     for (entity, fit_within, button) in children {
         let new_x = current_x + button_width;
-	// TODO: update the parent rect to lay this out
+        // TODO: update the parent rect to lay this out
         let button_rect = if sel_solo == Some(button.index.index) {
             Rect::from_center_size(Vec2::default(), Vec2::new(50., 50.))
         } else {
@@ -953,22 +1017,27 @@ fn show_clues(
     q_puzzle: Single<&Puzzle>,
     clues: Res<Assets<DynPuzzleClue>>,
     mut writer: EventWriter<UpdateCellIndex>,
+    mut commands: Commands,
+    mut clue_state: ResMut<NextState<ClueExplanationState>>,
 ) {
     let puzzle = *q_puzzle;
     let mut to_enact = None;
-    for clue in q_clues.clues.iter() {
-        let Some(clue) = clues.get(clue.id()) else {
+    for clue_handle in q_clues.clues.iter() {
+        let Some(clue) = clues.get(clue_handle.id()) else {
             continue;
         };
         let next = clue.advance_puzzle(puzzle);
         info!("next from {clue:?} => {next:?}");
         if let Some(next) = next {
-            to_enact = Some(next);
+            to_enact = Some((clue_handle, next));
             break;
         }
     }
-    if let Some(ev) = to_enact {
-        writer.send(ev);
+    if let Some((clue, update)) = to_enact {
+        let clue = clue.clone();
+        commands.spawn(ExplainClueComponent { clue, update });
+        clue_state.set(ClueExplanationState::Shown);
+        // writer.send(ev);
     }
 }
 
@@ -1081,7 +1150,11 @@ fn cell_release_drag(
 ) {
     for (entity, &DisplayCellButton { index }, drag_target) in &q_cell {
         if let Some(op) = drag_target.op {
-            writer.send(UpdateCellIndex { index, op });
+            writer.send(UpdateCellIndex {
+                index,
+                op,
+                explanation: None,
+            });
         }
         commands.entity(entity).despawn_recursive();
     }
@@ -1096,7 +1169,7 @@ fn cell_update(
     mut writer: EventWriter<UpdateCellDisplay>,
 ) {
     let mut to_update = HashSet::new();
-    for &UpdateCellIndex { index, op } in reader.read() {
+    for &UpdateCellIndex { index, op, .. } in reader.read() {
         let puzzle_cell = puzzle.cell_selection_mut(index.loc);
         if puzzle_cell.apply(index.index, op) > 0 {
             to_update.insert(index.loc);

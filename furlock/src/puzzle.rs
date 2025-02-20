@@ -47,7 +47,11 @@ impl CellLocIndex {
     }
 
     fn as_update(&self, op: UpdateCellIndexOperation) -> UpdateCellIndex {
-        UpdateCellIndex { index: *self, op }
+        UpdateCellIndex {
+            index: *self,
+            op,
+            explanation: None,
+        }
     }
 
     pub fn as_clear(&self) -> UpdateCellIndex {
