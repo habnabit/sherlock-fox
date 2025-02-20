@@ -290,6 +290,9 @@ struct DisplayCellButton {
     index: CellLocIndex,
 }
 
+#[derive(Reflect, Debug, Component, Clone)]
+struct DisplayCellButtonEnlarge;
+
 #[derive(Reflect, Debug, Component, Clone, Default)]
 struct HoverScaleEdge(Option<NodeIndex>);
 
@@ -772,12 +775,13 @@ fn fit_inside_row(
 
 fn fit_inside_cell(
     ev: Trigger<OnInsert, (FitWithin, DisplayCell)>,
-    q_about_target: Query<(&FitWithin, &Children), (With<DisplayCell>, Without<DisplayCellButton>)>,
+    q_about_target: Query<(&FitWithin, &Children, &DisplayCell), (Without<DisplayCellButton>)>,
     q_children: Query<(Entity, &FitWithin, &DisplayCellButton)>,
+    q_puzzle: Single<&Puzzle>,
     mut commands: Commands,
 ) {
     // info!("testing matrix cell fit of {:?}", ev.entity());
-    let Ok((within, children)) = q_about_target.get(ev.entity()) else {
+    let Ok((within, children, display)) = q_about_target.get(ev.entity()) else {
         return;
     };
     // info!(
@@ -793,14 +797,20 @@ fn fit_inside_cell(
         children.sort_by_key(|(_, _, button)| button.index);
         children
     };
+    let sel = q_puzzle.cell_selection(display.loc);
+    let sel_solo = sel.is_any_solo();
     let fit = within.rect;
     let fit_width = fit.width();
     let button_width = fit_width / children.len() as f32;
     let mut current_x = fit.min.x;
-    for (entity, fit_within, _) in children {
+    for (entity, fit_within, button) in children {
         let new_x = current_x + button_width;
-        let button_rect =
-            Rect::from_corners(Vec2::new(current_x, fit.min.y), Vec2::new(new_x, fit.max.y));
+	// TODO: update the parent rect to lay this out
+        let button_rect = if sel_solo == Some(button.index.index) {
+            Rect::from_center_size(Vec2::default(), Vec2::new(50., 50.))
+        } else {
+            Rect::from_corners(Vec2::new(current_x, fit.min.y), Vec2::new(new_x, fit.max.y))
+        };
         fit_within.set_rect(&mut commands, entity, button_rect);
         current_x = new_x;
     }
@@ -1086,35 +1096,13 @@ fn cell_update(
     mut writer: EventWriter<UpdateCellDisplay>,
 ) {
     let mut to_update = HashSet::new();
-    let mut solo_to_scan = vec![];
     for &UpdateCellIndex { index, op } in reader.read() {
         let puzzle_cell = puzzle.cell_selection_mut(index.loc);
-        puzzle_cell.apply(index.index, op);
-        to_update.insert(index.loc);
-        if let Some(solo_index) = puzzle_cell.is_any_solo() {
-            solo_to_scan.push(CellLocIndex {
-                index: solo_index,
-                ..index
-            });
+        if puzzle_cell.apply(index.index, op) > 0 {
+            to_update.insert(index.loc);
         }
     }
     puzzle.run_inference(&mut to_update);
-    // TODO: move inference
-    // for index in solo_to_scan {
-    //     for cell_nr in 0..puzzle.max_column as isize {
-    //         if cell_nr == index.loc.cell_nr {
-    //             continue;
-    //         }
-    //         let this_loc = CellLoc {
-    //             cell_nr,
-    //             ..index.loc
-    //         };
-    //         puzzle
-    //             .cell_selection_mut(this_loc)
-    //             .apply(index.index, UpdateCellIndexOperation::Clear);
-    //         to_update.insert(this_loc);
-    //     }
-    // }
     for loc in to_update {
         writer.send(UpdateCellDisplay { loc });
     }
@@ -1172,12 +1160,13 @@ fn cell_update_display(
             .push((index, sprite, target, hover_edge));
     }
     for &UpdateCellDisplay { loc } in reader.read() {
-        let cell = puzzle.cell_selection(loc);
+        let sel = puzzle.cell_selection(loc);
         let Some(buttons) = entity_map.get_mut(&loc) else {
             unreachable!()
         };
         // info!("updating cell={cell:?}");
         buttons.sort_by_key(|t| t.0);
+        let sel_solo = sel.is_any_solo();
 
         for (index, sprite, target, hover_edge) in buttons.iter_mut() {
             let Ok((mut player, graph_handle)) = q_reader.get_mut(target.player) else {
@@ -1186,8 +1175,10 @@ fn cell_update_display(
             let Some(graph) = animation_graphs.get_mut(graph_handle.id()) else {
                 continue;
             };
-            let alpha = if cell.is_enabled(index.index) {
+            let alpha = if sel.is_enabled(index.index) {
                 1.
+            } else if sel_solo.is_some() {
+                0.03
             } else {
                 0.2
             };
