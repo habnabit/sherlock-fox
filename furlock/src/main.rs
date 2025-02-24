@@ -96,6 +96,7 @@ fn main() {
         .add_observer(mouse_out_fit)
         .add_observer(mouse_over_fit)
         .add_observer(show_clue_highlight)
+        .add_observer(remove_clue_highlight)
         .add_observer(show_dyn_clue)
         .add_systems(Startup, setup)
         .add_systems(
@@ -216,18 +217,129 @@ fn show_clue_explanation(
         });
 }
 
-fn hide_clue_explanation() {}
+fn hide_clue_explanation(
+    mut commands: Commands,
+    // q_puzzle: Single<&Puzzle>,
+    q_explanation: Query<(Entity, &ExplainClueComponent)>,
+    q_clues: Query<(Entity, &PuzzleClueComponent), With<ExplanationHilight>>,
+    mut writer: EventWriter<UpdateCellIndex>,
+) {
+    for (explanation_entity, explanation) in &q_explanation {
+        commands.entity(explanation_entity).despawn_recursive();
+        writer.send(explanation.update.clone());
+    }
+    for (clue_entity, clue) in &q_clues {
+        commands.entity(clue_entity).remove::<ExplanationHilight>();
+    }
+}
+
+// ev: Trigger<OnInsert, FitWithin>,
+// ) {
+// let Ok((entity, fit, parent, mut transform)) = q_fit.get_mut(ev.entity()) else {
+//     return;
+// };
+// let Ok(parent_fit) = q_just_fit.get(**parent) else {
+//     return;
+// };
+// // info!("fit to transform before={fit:?}");
+// // TODO: unsure why this needs to be Y-reflected
+// let translate = (fit.rect.center() - parent_fit.rect.center()) * Vec2::new(1., -1.);
 
 fn show_clue_highlight(
     ev: Trigger<OnInsert, ExplanationHilight>,
     mut q_transform: Query<&mut Transform>,
+    mut q_animation: Query<(&AnimationTarget, &mut ExplanationBounceEdge)>,
+    mut q_reader: Query<(&mut AnimationPlayer, &AnimationGraphHandle)>,
+    mut animation_clips: ResMut<Assets<AnimationClip>>,
+    mut animation_graphs: ResMut<Assets<AnimationGraph>>,
 ) {
     let Ok(mut transform) = q_transform.get_mut(ev.entity()) else {
         return;
     };
+
+    let animation_info = q_animation
+        .get_mut(ev.entity())
+        .ok()
+        .and_then(|(target, row_edge)| {
+            let (player, graph_handle) = q_reader.get_mut(target.player).ok()?;
+            let graph = animation_graphs.get_mut(graph_handle.id())?;
+            Some((target, row_edge, player, graph))
+        });
+    let Some((target, mut row_edge, mut player, graph)) = animation_info else {
+        return;
+    };
+    // let translate = (translate, 0.).into();
+    let scale = Vec3::new(1.25, 1.25, 1.);
+
+    let mut clip = AnimationClip::default();
+    clip.add_curve_to_target(
+        target.id,
+        AnimatableCurve::new(
+            animated_field!(Transform::scale),
+            EasingCurve::new(transform.scale, scale, EaseFunction::SineInOut)
+                .reparametrize_linear(interval(0., 0.5).unwrap())
+                .unwrap()
+                .ping_pong()
+                .unwrap(),
+        ),
+    );
+
+    if let Some(prev_node) = row_edge.0 {
+        graph.remove_edge(graph.root, prev_node);
+    }
+    let clip_handle = animation_clips.add(clip);
+    let node_index = graph.add_clip(clip_handle, 1., graph.root);
+    player.play(node_index).repeat();
+    row_edge.0 = Some(node_index);
+
     transform.translation.z += 10.;
-    transform.scale.x = 2.;
-    transform.scale.y = 2.;
+}
+
+fn remove_clue_highlight(
+    ev: Trigger<OnRemove, ExplanationHilight>,
+    mut q_transform: Query<&mut Transform>,
+    mut q_animation: Query<(&AnimationTarget, &mut ExplanationBounceEdge)>,
+    mut q_reader: Query<(&mut AnimationPlayer, &AnimationGraphHandle)>,
+    mut animation_clips: ResMut<Assets<AnimationClip>>,
+    mut animation_graphs: ResMut<Assets<AnimationGraph>>,
+) {
+    let Ok(mut transform) = q_transform.get_mut(ev.entity()) else {
+        return;
+    };
+
+    let animation_info = q_animation
+        .get_mut(ev.entity())
+        .ok()
+        .and_then(|(target, row_edge)| {
+            let (player, graph_handle) = q_reader.get_mut(target.player).ok()?;
+            let graph = animation_graphs.get_mut(graph_handle.id())?;
+            Some((target, row_edge, player, graph))
+        });
+    let Some((target, mut row_edge, mut player, graph)) = animation_info else {
+        return;
+    };
+    let scale = Vec3::new(1., 1., 1.);
+
+    let mut clip = AnimationClip::default();
+    clip.add_curve_to_target(
+        target.id,
+        AnimatableCurve::new(
+            animated_field!(Transform::scale),
+            EasingCurve::new(transform.scale, scale, EaseFunction::SineOut)
+                .reparametrize_linear(interval(0., 0.25).unwrap())
+                .unwrap(),
+        ),
+    );
+
+    if let Some(prev_node) = row_edge.0 {
+        graph.remove_edge(graph.root, prev_node);
+    }
+    let clip_handle = animation_clips.add(clip);
+    let node_index = graph.add_clip(clip_handle, 1., graph.root);
+    player.play(node_index);
+    row_edge.0 = Some(node_index);
+
+    transform.translation.z -= 10.;
 }
 
 #[derive(Debug, Component, Reflect)]
@@ -347,6 +459,30 @@ impl Default for FitTransformAnimationBundle {
 }
 
 #[derive(Bundle)]
+struct ExplanationBounceAnimationBundle {
+    target: AnimationTarget,
+    scale_tracker: ExplanationBounceEdge,
+}
+
+impl ExplanationBounceAnimationBundle {
+    fn new(player: Entity) -> Self {
+        ExplanationBounceAnimationBundle {
+            target: AnimationTarget {
+                id: AnimationTargetId(Uuid::new_v4()),
+                player,
+            },
+            scale_tracker: Default::default(),
+        }
+    }
+}
+
+impl Default for ExplanationBounceAnimationBundle {
+    fn default() -> Self {
+        ExplanationBounceAnimationBundle::new(Entity::PLACEHOLDER)
+    }
+}
+
+#[derive(Bundle)]
 struct RandomColorSprite {
     sprite: Sprite,
     assign: AssignRandomColor,
@@ -402,6 +538,9 @@ struct HoverAlphaEdge(Option<NodeIndex>);
 
 #[derive(Reflect, Debug, Component, Clone, Default)]
 struct FitTransformEdge(Option<NodeIndex>);
+
+#[derive(Reflect, Debug, Component, Clone, Default)]
+struct ExplanationBounceEdge(Option<NodeIndex>);
 
 #[derive(Resource, Reflect)]
 #[reflect(Resource)]
@@ -722,7 +861,7 @@ fn add_clue(
             PuzzleClueComponent(clue.clone_weak()),
             FitWithinBundle::new(),
             DisplayClue,
-            FitTransformAnimationBundle::new(cluebox),
+            ExplanationBounceAnimationBundle::new(cluebox),
         ));
         updated = true;
     }
@@ -1089,8 +1228,7 @@ fn clue_explanation_clicked(
     mut ev: Trigger<Pointer<Up>>,
     q_explanation: Query<(Entity, &ExplainClueComponent), With<FitHover>>,
     mut clue_state: ResMut<NextState<ClueExplanationState>>,
-    mut writer: EventWriter<UpdateCellIndex>,
-    mut commands: Commands,
+    // mut commands: Commands,
 ) {
     info!("clicked in ?");
     let Ok((explanation, ExplainClueComponent { update, .. })) = q_explanation.get_single() else {
@@ -1098,8 +1236,6 @@ fn clue_explanation_clicked(
     };
     info!("clicked next {update:#?}");
     clue_state.set(ClueExplanationState::NotShown);
-    commands.entity(explanation).despawn_recursive();
-    writer.send(update.clone());
 }
 
 fn cell_clicked_down(
