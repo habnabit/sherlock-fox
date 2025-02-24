@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: EUPL-1.2
 
 #![feature(try_blocks, cmp_minmax)]
-#![feature(trace_macros)]
 
 mod clues;
 mod puzzle;

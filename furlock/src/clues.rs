@@ -512,8 +512,6 @@ macro_rules! explanation {
     };
 }
 
-trace_macros!(true);
-
 static SAME_COLUMN_SOLO: &[ClueExplanationChunk] = explanation![
     Loc2:
     %{loc2}, "is selected, therefore", %{loc1}, "must be selected.",
@@ -523,23 +521,6 @@ static SAME_COLUMN_CLEAR: &[ClueExplanationChunk] = explanation![
     Loc2:
     %{loc2}, "is not possible, therefore", %{loc1}, "must be impossible.",
 ];
-
-static balls: &[ClueExplanationChunk] = &[
-    ClueExplanationChunk::Accessor(stringify!(loc2), |p| {
-        p.lookup::<Loc2>().map(|x| &x.loc2 as &dyn CellDisplay)
-    }),
-    ClueExplanationChunk::Text(" is not possible, therefore "),
-    ClueExplanationChunk::Accessor(stringify!(loc1), |p| {
-        p.lookup::<Loc2>().map(|x| &x.loc1 as &dyn CellDisplay)
-    }),
-    ClueExplanationChunk::Text(" must be impossible."),
-];
-
-trace_macros!(false);
-
-// static SAME_COLUMN_CLEAR: &[ClueExplanationChunk] = &[
-//     ClueExplanationChunk::Text("same column clear"),
-// ];
 
 impl PuzzleClue for SameColumnClue {
     fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance {
