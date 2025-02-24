@@ -49,7 +49,7 @@ fn main() {
         .init_resource::<Assets<DynPuzzleClue>>()
         .init_resource::<SeededRng>()
         .init_state::<ClueExplanationState>()
-        .add_plugins(WorldInspectorPlugin::new())
+        // .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddClue>()
         .add_event::<AddRow>()
         .add_event::<UpdateCellDisplay>()
@@ -175,6 +175,7 @@ fn show_clue_explanation(
     //     return;
     // };
     let Some(ref explanation) = clue_component.update.explanation else {
+        warn!("couldn't show explanation on {clue_component:#?}");
         return;
     };
     let Some((clue_entity, _)) = q_clues.iter().find(|(_, c)| c.0.id() == clue_id) else {
@@ -193,14 +194,18 @@ fn show_clue_explanation(
                 justify_content: JustifyContent::Center,
                 ..Default::default()
             },
-            BackgroundColor(Color::hsla(0., 0., 0.3, 0.8)),
+            BackgroundColor(Color::hsla(0., 0., 0.3, 0.25)),
         ))
         .with_children(|parent| {
             use ClueExplanationResolvedChunk as Ch;
             for c in explanation.resolved() {
                 match c {
                     Ch::Text(s) => {
-                        parent.spawn((Text::new(s), NO_PICK));
+                        parent.spawn((
+                            Text::new(s),
+                            BackgroundColor(Color::hsla(0., 0., 0.1, 0.8)),
+                            NO_PICK,
+                        ));
                     }
                     Ch::Accessed(name, cell_display) => {
                         cell_display.spawn_into(*q_puzzle, parent);
@@ -669,8 +674,8 @@ fn spawn_row(
             // let (cluebox, cluebox_fit) = q_cluebox.single();
             let Some(clue): Option<Handle<DynPuzzleClue>> = (try {
                 match rng.0.random_range(0..3) {
-                    _ => clue_assets.add(SameColumnClue::new_random(&mut rng.0, &puzzle)?),
-                    1 => clue_assets.add(BetweenColumnsClue::new_random(&mut rng.0, &puzzle)?),
+                    0 => clue_assets.add(SameColumnClue::new_random(&mut rng.0, &puzzle)?),
+                    _ => clue_assets.add(BetweenColumnsClue::new_random(&mut rng.0, &puzzle)?),
                     2 => clue_assets.add(AdjacentColumnClue::new_random(&mut rng.0, &puzzle)?),
                     _ => unreachable!(),
                 }

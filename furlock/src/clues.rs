@@ -41,7 +41,6 @@ impl ClueExplanationPayload {
 }
 
 trait PayloadType: Send + Sync + Clone + 'static {}
-impl PayloadType for Loc2 {}
 
 impl<T: PayloadType> typemap::Key for StoredItem<T> {
     type Value = T;
@@ -68,13 +67,34 @@ impl ClueExplanation {
     }
 }
 
-impl From<(&Loc2, &'static [ClueExplanationChunk])> for ClueExplanation {
-    fn from((loc, chunks): (&Loc2, &'static [ClueExplanationChunk])) -> Self {
-        let mut payload = ClueExplanationPayload::default();
-        payload.stored.insert::<StoredItem<Loc2>>(loc.clone());
-        ClueExplanation { chunks, payload }
-    }
+macro_rules! impl_clue_explanation {
+    ( $( $t:ty , )* ) => {
+        $(
+
+            impl PayloadType for $t {}
+            impl From<(& $t, &'static [ClueExplanationChunk])> for ClueExplanation {
+                fn from((loc, chunks): (& $t, &'static [ClueExplanationChunk])) -> Self {
+                    let mut payload = ClueExplanationPayload::default();
+                    payload.stored.insert::<StoredItem<$t>>(loc.clone());
+                    ClueExplanation { chunks, payload }
+                }
+            }
+
+        )*
+    };
 }
+
+impl_clue_explanation! {
+    Loc2, Loc2Mirrored, Loc3,
+}
+
+// impl From<(&Loc2, &'static [ClueExplanationChunk])> for ClueExplanation {
+//     fn from((loc, chunks): (&Loc2, &'static [ClueExplanationChunk])) -> Self {
+//         let mut payload = ClueExplanationPayload::default();
+//         payload.stored.insert::<StoredItem<Loc2>>(loc.clone());
+//         ClueExplanation { chunks, payload }
+//     }
+// }
 
 pub trait CellDisplay: std::fmt::Debug {
     fn as_string(&self) -> String;
@@ -340,8 +360,9 @@ impl Loc3Mirrored {
         predicate(&my_3s.0) && predicate(&my_3s.1)
     }
 
-    fn eval_as_3s<R>(&self, predicate: fn(&Loc3) -> Option<R>) -> Option<R> {
-        todo!()
+    fn eval_as_3s<R>(&self, eval: fn(&Loc3) -> Option<R>) -> Option<R> {
+        let my_3s = self.as_3s();
+        eval(&my_3s.0).or_else(|| eval(&my_3s.1))
     }
 }
 
@@ -639,6 +660,16 @@ impl AdjacentColumnClue {
     }
 }
 
+static ADJACENT_COLUMN_SOLO: &[ClueExplanationChunk] = explanation![
+    Loc2Mirrored:
+    %{loc2}, "is selected, therefore", %{loc1}, "must be selected.",
+];
+
+static ADJACENT_COLUMN_CLEAR: &[ClueExplanationChunk] = explanation![
+    Loc2Mirrored:
+    %{loc1}, "must have", %{loc2}, "on one side or the other (", %{loc2_p}, ")",
+];
+
 impl PuzzleClue for AdjacentColumnClue {
     fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance {
         let mut resolver = ImplicationResolver::new_unit(puzzle);
@@ -664,7 +695,7 @@ impl PuzzleClue for AdjacentColumnClue {
                     },
                 )
                 .if_then(
-                    |Loc2Mirrored {
+                    |l @ Loc2Mirrored {
                          loc1: l1,
                          loc2: l2,
                          loc2_p: l2p,
@@ -673,7 +704,7 @@ impl PuzzleClue for AdjacentColumnClue {
                         //     "checking adjacent enabled\n  l1={l1:?}\n  l2={l2:?}  \n  l3={l2p:?}"
                         // );
                         if l1.is_enabled_not_solo() && !l2.is_enabled && !l2p.is_enabled {
-                            Some(l1.as_clear())
+                            Some(l1.as_clear().with_explanation((l, ADJACENT_COLUMN_CLEAR)))
                         } else {
                             None
                         }
@@ -758,6 +789,11 @@ impl BetweenColumnsClue {
     }
 }
 
+static BETWEEN_COLUMN_CLEAR: &[ClueExplanationChunk] = explanation![
+    Loc3:
+    "between column 3", %{loc1}, %{loc2}, %{loc3},
+];
+
 impl PuzzleClue for BetweenColumnsClue {
     fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance {
         let mut resolver = ImplicationResolver::new_unit(puzzle);
@@ -768,14 +804,20 @@ impl PuzzleClue for BetweenColumnsClue {
         for mut sub_resolver in resolver.iter_all_cols::<IfThen<_, _>>() {
             // info!("between sub resolver: {sub_resolver:?}");
             sub_resolver.if_then(|l: &Loc3Mirrored| {
-                // info!("checking between\n l={l:#?}");
-                if l.loc1.is_enabled_not_solo()
-                    && l.both_3s(|sl| !sl.loc2.is_enabled || !sl.loc3.is_enabled)
-                {
-                    Some(l.loc1.as_clear())
-                } else {
-                    None
+                if !l.loc1.is_enabled_not_solo() {
+                    return None;
                 }
+                l.eval_as_3s(|sl| {
+                    if !sl.loc2.is_enabled || !sl.loc3.is_enabled {
+                        Some(
+                            sl.loc1
+                                .as_clear()
+                                .with_explanation((sl, BETWEEN_COLUMN_CLEAR)),
+                        )
+                    } else {
+                        None
+                    }
+                })
             });
             for ev in sub_resolver.iter_reflected_3s() {
                 return Some(ev);
