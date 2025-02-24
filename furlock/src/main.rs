@@ -77,12 +77,13 @@ fn main() {
         .register_type::<PuzzleClues>()
         .register_type::<PuzzleRow>()
         .register_type::<PuzzleSpawn>()
-        .register_type::<RowMoveEdge>()
+        .register_type::<FitTransformEdge>()
         .register_type::<SameColumnClue>()
         .register_type::<SeededRng>()
         .register_type::<UpdateCellIndexOperation>()
         .add_observer(cell_clicked_down)
         .add_observer(cell_continue_drag)
+        .add_observer(clue_explanation_clicked)
         .add_observer(fit_inside_cell)
         .add_observer(fit_inside_clues)
         .add_observer(fit_inside_matrix)
@@ -160,15 +161,18 @@ struct ExplainClueComponent {
 fn show_clue_explanation(
     mut commands: Commands,
     q_puzzle: Single<&Puzzle>,
-    q_clue: Single<&ExplainClueComponent>,
+    q_clue: Query<(Entity, &ExplainClueComponent)>,
     q_clues: Query<(Entity, &PuzzleClueComponent)>,
-    clues: Res<Assets<DynPuzzleClue>>,
+    // clues: Res<Assets<DynPuzzleClue>>,
 ) {
-    let clue_id = q_clue.clue.id();
-    let Some(clue) = clues.get(clue_id) else {
+    let Ok((clue_display_entity, clue_component)) = q_clue.get_single() else {
         return;
     };
-    let Some(ref explanation) = q_clue.update.explanation else {
+    let clue_id = clue_component.clue.id();
+    // let Some(clue) = clues.get(clue_id) else {
+    //     return;
+    // };
+    let Some(ref explanation) = clue_component.update.explanation else {
         return;
     };
     let Some((clue_entity, _)) = q_clues.iter().find(|(_, c)| c.0.id() == clue_id) else {
@@ -176,7 +180,8 @@ fn show_clue_explanation(
     };
     commands.entity(clue_entity).insert(ExplanationHilight);
     commands
-        .spawn((
+        .entity(clue_display_entity)
+        .insert((
             Node {
                 width: Val::Vw(35.),
                 height: Val::Vh(30.),
@@ -318,14 +323,14 @@ impl Default for HoverAnimationBundle {
 }
 
 #[derive(Bundle)]
-struct RowAnimationBundle {
+struct FitTransformAnimationBundle {
     target: AnimationTarget,
-    translation_tracker: RowMoveEdge,
+    translation_tracker: FitTransformEdge,
 }
 
-impl RowAnimationBundle {
+impl FitTransformAnimationBundle {
     fn new(player: Entity) -> Self {
-        RowAnimationBundle {
+        FitTransformAnimationBundle {
             target: AnimationTarget {
                 id: AnimationTargetId(Uuid::new_v4()),
                 player,
@@ -335,9 +340,9 @@ impl RowAnimationBundle {
     }
 }
 
-impl Default for RowAnimationBundle {
+impl Default for FitTransformAnimationBundle {
     fn default() -> Self {
-        RowAnimationBundle::new(Entity::PLACEHOLDER)
+        FitTransformAnimationBundle::new(Entity::PLACEHOLDER)
     }
 }
 
@@ -396,18 +401,19 @@ struct HoverScaleEdge(Option<NodeIndex>);
 struct HoverAlphaEdge(Option<NodeIndex>);
 
 #[derive(Reflect, Debug, Component, Clone, Default)]
-struct RowMoveEdge(Option<NodeIndex>);
+struct FitTransformEdge(Option<NodeIndex>);
 
 #[derive(Resource, Reflect)]
 #[reflect(Resource)]
 struct PuzzleSpawn {
+    tileset_pool: Vec<Tileset>,
     timer: Timer,
     show_clues: usize,
 }
 
 #[derive(Event, Debug)]
 struct AddRow {
-    len: usize,
+    row: PuzzleRow,
 }
 
 #[derive(Event, Debug)]
@@ -415,7 +421,7 @@ struct AddClue {
     clue: Handle<DynPuzzleClue>,
 }
 
-#[derive(Event, Debug, Reflect)]
+#[derive(Event, Debug, Reflect, Clone)]
 struct UpdateCellIndex {
     index: CellLocIndex,
     op: UpdateCellIndexOperation,
@@ -466,13 +472,35 @@ fn spawn_row(
     mut rng: ResMut<SeededRng>,
     mut update_cell_writer: EventWriter<UpdateCellIndex>,
     mut clue_assets: ResMut<Assets<DynPuzzleClue>>,
+    asset_server: Res<AssetServer>,
+    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
-    // static LENGTH_SAMPLE: &[usize] = &[4, 5, 5, 5, 5, 6, 6, 7];
+    static LENGTH_SAMPLE: &[usize] = &[4, 5, 5, 5, 5, 6, 6, 7];
     config.timer.tick(time.delta());
     if config.timer.finished() {
         if puzzle.rows.len() < 5 {
             // let len = LENGTH_SAMPLE.choose(&mut rng.0).cloned().unwrap();
-            new_row_writer.send(AddRow { len: 5 });
+            let len = 5;
+            let tileset = config.tileset_pool.pop().unwrap();
+            let image = asset_server.load(tileset.asset_path);
+            let layout = TextureAtlasLayout::from_grid(
+                UVec2::new(tileset.tile_size, tileset.tile_size),
+                tileset.columns,
+                tileset.rows,
+                None,
+                None,
+            );
+            let atlas_len = layout.len();
+            let layout_handle = texture_atlas_layouts.add(layout);
+            let row = PuzzleRow::new_shuffled(
+                &mut rng.0,
+                len,
+                image.clone(),
+                layout_handle.clone(),
+                atlas_len,
+                tileset.shuffle,
+            );
+            new_row_writer.send(AddRow { row });
         } else if config.show_clues > 0 {
             config.show_clues -= 1;
             if config.show_clues == 0 {
@@ -545,6 +573,7 @@ fn random_colors<R: Rng>(n_colors: usize, rng: &mut R) -> Vec<Color> {
         .collect()
 }
 
+#[derive(Debug, Clone, Reflect)]
 struct Tileset {
     asset_path: &'static str,
     shuffle: bool,
@@ -601,38 +630,15 @@ static TILESETS: [Tileset; 6] = [
 fn add_row(
     mut commands: Commands,
     mut reader: EventReader<AddRow>,
-    mut rng: ResMut<SeededRng>,
     mut puzzle: Single<&mut Puzzle>,
     matrix_entity: Single<(Entity, &FitWithin), With<DisplayMatrix>>,
     mut animation_graphs: ResMut<Assets<AnimationGraph>>,
-    asset_server: Res<AssetServer>,
-    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
     let (matrix, matrix_fit) = *matrix_entity;
     let mut spawned = false;
     for ev in reader.read() {
-        let tileset = TILESETS.choose(&mut rng.0).unwrap();
-        let image = asset_server.load(tileset.asset_path);
-        let layout = TextureAtlasLayout::from_grid(
-            UVec2::new(tileset.tile_size, tileset.tile_size),
-            tileset.columns,
-            tileset.rows,
-            None,
-            None,
-        );
-        let atlas_len = layout.len();
-        let layout_handle = texture_atlas_layouts.add(layout);
         let row_nr = puzzle.rows.len();
-        // let colors = random_colors(ev.len, &mut rng.0);
-        // info!("spawning row {:?}", colors);
-        puzzle.add_row(PuzzleRow::new_shuffled(
-            &mut rng.0,
-            ev.len,
-            image.clone(),
-            layout_handle.clone(),
-            atlas_len,
-            tileset.shuffle,
-        ));
+        puzzle.add_row(ev.row.clone());
         let puzzle_row = &puzzle.rows[row_nr];
 
         commands.entity(matrix).with_children(|matrix_spawner| {
@@ -641,10 +647,10 @@ fn add_row(
                     FitWithinBundle::new(),
                     // RandomColorSprite::new(),
                     DisplayRow { row_nr },
-                    RowAnimationBundle::new(matrix),
+                    FitTransformAnimationBundle::new(matrix),
                 ))
                 .with_children(|row_spawner| {
-                    for cell_nr in 0..ev.len as isize {
+                    for cell_nr in 0..puzzle_row.len() as isize {
                         let loc = CellLoc { row_nr, cell_nr };
                         let graph = AnimationGraph::new();
                         let cell_player = row_spawner
@@ -661,7 +667,7 @@ fn add_row(
                             ))
                             .with_children(|cell_spawner| {
                                 let button_size = Vec2::new(32., 32.);
-                                for index in 0..ev.len {
+                                for index in 0..puzzle_row.len() {
                                     let mut sprite = puzzle_row.display_sprite(index);
                                     sprite.custom_size = Some(button_size - Vec2::new(5., 5.));
                                     sprite.color = Color::hsla(0., 0., 1., 1.);
@@ -705,7 +711,7 @@ fn add_clue(
     mut commands: Commands,
     mut reader: EventReader<AddClue>,
     mut q_puzzle: Single<(&Puzzle, &mut PuzzleClues)>,
-    q_cluebox: Single<(Entity, &FitWithin), With<DisplayCluebox>>,
+    q_cluebox: Single<(Entity, &FitWithin), (With<DisplayCluebox>, With<AnimationPlayer>)>,
 ) {
     let (_puzzle, ref mut puzzle_clues) = *q_puzzle;
     let (cluebox, cluebox_fit) = *q_cluebox;
@@ -716,6 +722,7 @@ fn add_clue(
             PuzzleClueComponent(clue.clone_weak()),
             FitWithinBundle::new(),
             DisplayClue,
+            FitTransformAnimationBundle::new(cluebox),
         ));
         updated = true;
     }
@@ -922,7 +929,7 @@ fn fit_to_transform(
     ev: Trigger<OnInsert, FitWithin>,
     mut q_fit: Query<(Entity, &FitWithin, &Parent, &mut Transform)>,
     q_just_fit: Query<&FitWithin>,
-    mut q_animation: Query<(&AnimationTarget, &mut RowMoveEdge)>,
+    mut q_animation: Query<(&AnimationTarget, &mut FitTransformEdge)>,
     mut q_reader: Query<(&mut AnimationPlayer, &AnimationGraphHandle)>,
     mut animation_clips: ResMut<Assets<AnimationClip>>,
     mut animation_graphs: ResMut<Assets<AnimationGraph>>,
@@ -1054,7 +1061,6 @@ fn show_clues(
     q_clues: Single<&PuzzleClues>,
     q_puzzle: Single<&Puzzle>,
     clues: Res<Assets<DynPuzzleClue>>,
-    mut writer: EventWriter<UpdateCellIndex>,
     mut commands: Commands,
     mut clue_state: ResMut<NextState<ClueExplanationState>>,
 ) {
@@ -1077,6 +1083,23 @@ fn show_clues(
         clue_state.set(ClueExplanationState::Shown);
         // writer.send(ev);
     }
+}
+
+fn clue_explanation_clicked(
+    mut ev: Trigger<Pointer<Up>>,
+    q_explanation: Query<(Entity, &ExplainClueComponent), With<FitHover>>,
+    mut clue_state: ResMut<NextState<ClueExplanationState>>,
+    mut writer: EventWriter<UpdateCellIndex>,
+    mut commands: Commands,
+) {
+    info!("clicked in ?");
+    let Ok((explanation, ExplainClueComponent { update, .. })) = q_explanation.get_single() else {
+        return;
+    };
+    info!("clicked next {update:#?}");
+    clue_state.set(ClueExplanationState::NotShown);
+    commands.entity(explanation).despawn_recursive();
+    writer.send(update.clone());
 }
 
 fn cell_clicked_down(
@@ -1316,12 +1339,19 @@ fn cell_update_display(
     }
 }
 
-fn setup(mut commands: Commands, mut animation_graphs: ResMut<Assets<AnimationGraph>>) {
+fn setup(
+    mut commands: Commands,
+    mut rng: ResMut<SeededRng>,
+    mut animation_graphs: ResMut<Assets<AnimationGraph>>,
+) {
     commands.spawn(Camera2d);
     commands.spawn((Puzzle::default(), PuzzleClues::default()));
+    let mut tileset_pool = TILESETS.iter().cloned().collect::<Vec<_>>();
+    tileset_pool.shuffle(&mut rng.0);
     commands.insert_resource(PuzzleSpawn {
         timer: Timer::new(Duration::from_secs_f32(0.05), TimerMode::Repeating),
         show_clues: 10,
+        tileset_pool,
     });
     commands
         .spawn((DisplayPuzzle, FitWithinBundle::new()))
@@ -1332,6 +1362,11 @@ fn setup(mut commands: Commands, mut animation_graphs: ResMut<Assets<AnimationGr
                 AnimationPlayer::default(),
                 AnimationGraphHandle(animation_graphs.add(AnimationGraph::new())),
             ));
-            puzzle.spawn((DisplayCluebox, FitWithinBundle::new()));
+            puzzle.spawn((
+                DisplayCluebox,
+                FitWithinBundle::new(),
+                AnimationPlayer::default(),
+                AnimationGraphHandle(animation_graphs.add(AnimationGraph::new())),
+            ));
         });
 }
