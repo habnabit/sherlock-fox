@@ -5,7 +5,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "furlock",
+    "sherlock-fox",
 ]
 
 # Enable a small amount of optimization in the dev profile.

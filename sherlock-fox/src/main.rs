@@ -30,11 +30,7 @@ use puzzle::{
     CellLoc, CellLocIndex, Puzzle, PuzzleCellDisplay, PuzzleCellSelection, PuzzleRow,
     UpdateCellIndexOperation,
 };
-use rand::{
-    distr::Distribution,
-    seq::{IndexedRandom, SliceRandom},
-    Rng, SeedableRng,
-};
+use rand::{distr::Distribution, seq::SliceRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use uuid::Uuid;
 
@@ -49,7 +45,7 @@ fn main() {
         .init_resource::<Assets<DynPuzzleClue>>()
         .init_resource::<SeededRng>()
         .init_state::<ClueExplanationState>()
-        .add_plugins(WorldInspectorPlugin::new())
+        // .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddClue>()
         .add_event::<AddRow>()
         .add_event::<UpdateCellDisplay>()

@@ -1,12 +1,14 @@
-use std::fmt::Display;
+// © 2025 <_@habnab.it>
+//
+// SPDX-License-Identifier: EUPL-1.2
 
-use bevy::{prelude::*, utils::HashMap};
+use bevy::prelude::*;
 use rand::Rng;
-use typemap::{ShareCloneMap, TypeMap};
+use typemap::ShareCloneMap;
 
 use crate::{
-    puzzle::{CellLoc, CellLocIndex, Puzzle, UpdateCellIndexOperation},
-    FitWithinBundle, UpdateCellIndex, NO_PICK,
+    puzzle::{CellLoc, CellLocIndex, Puzzle},
+    UpdateCellIndex, NO_PICK,
 };
 
 pub type PuzzleAdvance = Option<UpdateCellIndex>;
