@@ -49,7 +49,7 @@ fn main() {
         .init_resource::<Assets<DynPuzzleClue>>()
         .init_resource::<SeededRng>()
         .init_state::<ClueExplanationState>()
-        // .add_plugins(WorldInspectorPlugin::new())
+        .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddClue>()
         .add_event::<AddRow>()
         .add_event::<UpdateCellDisplay>()
@@ -90,6 +90,7 @@ fn main() {
         .add_observer(fit_inside_puzzle)
         .add_observer(fit_inside_row)
         .add_observer(fit_to_transform)
+        .add_observer(fit_background_sprite)
         .add_observer(interact_cell_generic::<OnAdd>(1.25))
         .add_observer(interact_cell_generic::<OnRemove>(1.0))
         .add_observer(interact_drag_ui_move)
@@ -97,6 +98,7 @@ fn main() {
         .add_observer(mouse_over_fit)
         .add_observer(show_clue_highlight)
         .add_observer(remove_clue_highlight)
+        .add_observer(make_fit_background_sprite)
         .add_observer(show_dyn_clue)
         .add_systems(Startup, setup)
         .add_systems(
@@ -440,6 +442,25 @@ impl FitWithinBundle {
     }
 }
 
+#[derive(Reflect, Debug, Component, Default)]
+struct FitWithinBackground {
+    index: usize,
+    color: Color,
+}
+
+impl FitWithinBackground {
+    fn new(index: usize) -> Self {
+        FitWithinBackground {
+            index,
+            color: Color::hsla(0., 0., 1., 1.),
+        }
+    }
+
+    fn new_colored(index: usize, color: Color) -> Self {
+        FitWithinBackground { index, color }
+    }
+}
+
 #[derive(Bundle)]
 struct HoverAnimationBundle {
     target: AnimationTarget,
@@ -694,7 +715,7 @@ fn spawn_row(
                 match rng.0.random_range(0..3) {
                     0 => clue_assets.add(SameColumnClue::new_random(&mut rng.0, &puzzle)?),
                     _ => clue_assets.add(AdjacentColumnClue::new_random(&mut rng.0, &puzzle)?),
-                    _ => clue_assets.add(BetweenColumnsClue::new_random(&mut rng.0, &puzzle)?),
+                    2 => clue_assets.add(BetweenColumnsClue::new_random(&mut rng.0, &puzzle)?),
                     _ => unreachable!(),
                 }
             }) else {
@@ -837,6 +858,7 @@ fn add_row(
                         row_spawner
                             .spawn((
                                 FitWithinBundle::new(),
+                                FitWithinBackground::new_colored(6, DEFAULT_CELL_BORDER_COLOR),
                                 // RandomColorSprite::new(),
                                 DisplayCell { loc },
                             ))
@@ -915,7 +937,7 @@ fn fit_inside_window(
     let Some(logical_viewport) = camera.logical_viewport_rect() else {
         return;
     };
-    let window_size = logical_viewport.inflate(-50.);
+    let window_size = logical_viewport.inflate(-10.);
     // info!("ensuring window fit of window({:?}) {:?} {:?}", window_size, camera_entity, camera);
     for (entity, fit_within) in &q_fit_root {
         fit_within.set_rect(&mut commands, entity, window_size);
@@ -975,8 +997,7 @@ fn fit_inside_clues(
     let mut current_x = fit.min.x;
     for (entity, fit_within, _) in children {
         let new_x = current_x + clue_width;
-        let clue_rect =
-            Rect::from_corners(Vec2::new(current_x, fit.min.y), Vec2::new(new_x, fit.max.y));
+        let clue_rect = Rect::new(current_x, fit.min.y, new_x, fit.max.y);
         fit_within.set_rect(&mut commands, entity, clue_rect);
         current_x = new_x;
     }
@@ -1011,8 +1032,7 @@ fn fit_inside_matrix(
     let mut current_y = fit.max.y;
     for (entity, fit_within, _) in children {
         let new_y = current_y - row_height;
-        let row_rect =
-            Rect::from_corners(Vec2::new(fit.min.x, current_y), Vec2::new(fit.max.x, new_y));
+        let row_rect = Rect::new(fit.min.x, current_y, fit.max.x, new_y).inflate(-5.);
         fit_within.set_rect(&mut commands, entity, row_rect);
         current_y = new_y;
     }
@@ -1050,8 +1070,7 @@ fn fit_inside_row(
     let mut current_x = fit.min.x;
     for (entity, fit_within, _) in children {
         let new_x = current_x + cell_width;
-        let cell_rect =
-            Rect::from_corners(Vec2::new(current_x, fit.min.y), Vec2::new(new_x, fit.max.y));
+        let cell_rect = Rect::new(current_x, fit.min.y, new_x, fit.max.y).inflate(-5.);
         fit_within.set_rect(&mut commands, entity, cell_rect);
         current_x = new_x + cell_spacing;
     }
@@ -1059,7 +1078,7 @@ fn fit_inside_row(
 
 fn fit_inside_cell(
     ev: Trigger<OnInsert, (FitWithin, DisplayCell)>,
-    q_about_target: Query<(&FitWithin, &Children, &DisplayCell), (Without<DisplayCellButton>)>,
+    q_about_target: Query<(&FitWithin, &Children, &DisplayCell), Without<DisplayCellButton>>,
     q_children: Query<(Entity, &FitWithin, &DisplayCellButton)>,
     q_puzzle: Single<&Puzzle>,
     mut commands: Commands,
@@ -1093,7 +1112,7 @@ fn fit_inside_cell(
         let button_rect = if sel_solo == Some(button.index.index) {
             Rect::from_center_size(Vec2::default(), Vec2::new(50., 50.))
         } else {
-            Rect::from_corners(Vec2::new(current_x, fit.min.y), Vec2::new(new_x, fit.max.y))
+            Rect::new(current_x, fit.min.y, new_x, fit.max.y)
         };
         fit_within.set_rect(&mut commands, entity, button_rect);
         current_x = new_x;
@@ -1127,14 +1146,16 @@ fn fit_to_transform(
             Some((target, row_edge, player, graph))
         });
     if let Some((target, mut row_edge, mut player, graph)) = animation_info {
-        let translate = (translate, 0.).into();
+        let mut translation = transform.translation;
+        translation.x = translate.x;
+        translation.y = translate.y;
 
         let mut clip = AnimationClip::default();
         clip.add_curve_to_target(
             target.id,
             AnimatableCurve::new(
                 animated_field!(Transform::translation),
-                EasingCurve::new(transform.translation, translate, EaseFunction::CubicOut)
+                EasingCurve::new(transform.translation, translation, EaseFunction::CubicOut)
                     .reparametrize_linear(interval(0., 0.5).unwrap())
                     .unwrap(),
             ),
@@ -1151,6 +1172,16 @@ fn fit_to_transform(
         transform.translation.x = translate.x;
         transform.translation.y = translate.y;
     }
+}
+
+fn fit_background_sprite(
+    ev: Trigger<OnInsert, FitWithin>,
+    mut q_fit: Query<(&FitWithin, &mut Sprite), With<FitWithinBackground>>,
+) {
+    let Ok((fit, mut sprite)) = q_fit.get_mut(ev.entity()) else {
+        return;
+    };
+    sprite.custom_size = Some(fit.rect.size());
 }
 
 fn mouse_over_fit(ev: Trigger<Pointer<Over>>, mut commands: Commands) {
@@ -1445,19 +1476,32 @@ impl AnimatableProperty for ButtonOpacityAnimation {
     }
 }
 
+const DEFAULT_BORDER_COLOR: Color = Color::hsla(33., 1., 0.32, 1.);
+const DEFAULT_CELL_BORDER_COLOR: Color = Color::hsla(33., 1., 0.26, 1.);
+// const DEFAULT_CELL_BORDER_COLOR: Color = Color::hsla(0., 0., 0.8, 1.);
+const INVALID_CELL_BORDER_COLOR: Color = Color::hsla(0., 1., 0.5, 1.);
+
 fn cell_update_display(
     puzzle: Single<&Puzzle>,
     mut reader: EventReader<UpdateCellDisplay>,
-    mut q_cell: Query<(
-        &DisplayCellButton,
-        &mut Sprite,
-        &mut AnimationTarget,
-        &mut HoverAlphaEdge,
-    )>,
+    mut q_bg: Query<(&DisplayCell, &mut Sprite), Without<DisplayCellButton>>,
+    mut q_cell: Query<
+        (
+            &DisplayCellButton,
+            &mut Sprite,
+            &mut AnimationTarget,
+            &mut HoverAlphaEdge,
+        ),
+        Without<DisplayCell>,
+    >,
     mut q_reader: Query<(&mut AnimationPlayer, &AnimationGraphHandle)>,
     mut animation_clips: ResMut<Assets<AnimationClip>>,
     mut animation_graphs: ResMut<Assets<AnimationGraph>>,
 ) {
+    let mut bg_map = HashMap::new();
+    for (cell, sprite) in &mut q_bg {
+        bg_map.insert(cell.loc, sprite);
+    }
     let mut entity_map = HashMap::<_, Vec<_>>::new();
     for (&DisplayCellButton { index }, sprite, target, hover_edge) in &mut q_cell {
         entity_map
@@ -1473,6 +1517,15 @@ fn cell_update_display(
         // info!("updating cell={cell:?}");
         buttons.sort_by_key(|t| t.0);
         let sel_solo = sel.is_any_solo();
+
+        if let Some(sprite) = bg_map.get_mut(&loc) {
+            let color = if !sel.is_enabled(puzzle.cell_answer_index(loc)) {
+                INVALID_CELL_BORDER_COLOR
+            } else {
+                DEFAULT_CELL_BORDER_COLOR
+            };
+            sprite.color = color;
+        }
 
         for (index, sprite, target, hover_edge) in buttons.iter_mut() {
             let Ok((mut player, graph_handle)) = q_reader.get_mut(target.player) else {
@@ -1511,13 +1564,53 @@ fn cell_update_display(
     }
 }
 
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
+struct UIBorders {
+    texture: Handle<Image>,
+    atlas_layout: Handle<TextureAtlasLayout>,
+    slicer: TextureSlicer,
+}
+
+impl UIBorders {
+    fn make_sprite(&self, index: usize, color: Color) -> Sprite {
+        let mut sprite = Sprite::from_atlas_image(self.texture.clone(), TextureAtlas {
+            index,
+            layout: self.atlas_layout.clone(),
+        });
+        sprite.color = color;
+        sprite.image_mode = SpriteImageMode::Sliced(self.slicer.clone());
+        sprite
+    }
+}
+
+fn make_fit_background_sprite(
+    ev: Trigger<OnInsert, FitWithinBackground>,
+    borders: Res<UIBorders>,
+    mut q_target: Query<(&FitWithinBackground, &mut Transform)>,
+    mut commands: Commands,
+) {
+    let Ok((background, mut transform)) = q_target.get_mut(ev.entity()) else {
+        return;
+    };
+    transform.translation.z -= 5.;
+    // info!("transform: {transform:?}");
+    commands.entity(ev.entity()).insert((
+        borders.make_sprite(background.index, background.color),
+        NO_PICK,
+    ));
+}
+
 fn setup(
     mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut texture_atlases: ResMut<Assets<TextureAtlasLayout>>,
     mut rng: ResMut<SeededRng>,
     mut animation_graphs: ResMut<Assets<AnimationGraph>>,
 ) {
     commands.spawn(Camera2d);
     commands.spawn((Puzzle::default(), PuzzleClues::default()));
+
     let mut tileset_pool = TILESETS.iter().cloned().collect::<Vec<_>>();
     tileset_pool.shuffle(&mut rng.0);
     commands.insert_resource(PuzzleSpawn {
@@ -1525,18 +1618,39 @@ fn setup(
         show_clues: 10,
         tileset_pool,
     });
+
+    commands.insert_resource({
+        let texture = asset_server.load("fantasy_ui_border_sheet.png");
+        let atlas_layout =
+            TextureAtlasLayout::from_grid(UVec2::new(50, 50), 6, 6, Some(UVec2::splat(2)), None);
+        let atlas_layout = texture_atlases.add(atlas_layout);
+        let slicer = TextureSlicer {
+            border: BorderRect::square(24.0),
+            center_scale_mode: SliceScaleMode::Stretch,
+            sides_scale_mode: SliceScaleMode::Stretch,
+            max_corner_scale: 1.0,
+        };
+        UIBorders {
+            texture,
+            atlas_layout,
+            slicer,
+        }
+    });
+
     commands
         .spawn((DisplayPuzzle, FitWithinBundle::new()))
         .with_children(|puzzle| {
             puzzle.spawn((
                 DisplayMatrix,
                 FitWithinBundle::new(),
+                FitWithinBackground::new_colored(19, DEFAULT_BORDER_COLOR),
                 AnimationPlayer::default(),
                 AnimationGraphHandle(animation_graphs.add(AnimationGraph::new())),
             ));
             puzzle.spawn((
                 DisplayCluebox,
                 FitWithinBundle::new(),
+                FitWithinBackground::new_colored(24, DEFAULT_BORDER_COLOR),
                 AnimationPlayer::default(),
                 AnimationGraphHandle(animation_graphs.add(AnimationGraph::new())),
             ));

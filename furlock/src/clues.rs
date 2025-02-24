@@ -42,7 +42,7 @@ impl ClueExplanationPayload {
     }
 }
 
-trait PayloadType: Send + Sync + Clone + 'static {}
+pub trait PayloadType: Send + Sync + Clone + 'static {}
 
 impl<T: PayloadType> typemap::Key for StoredItem<T> {
     type Value = T;
@@ -795,6 +795,7 @@ pub struct BetweenColumnsClue {
     loc1: CellLoc,
     loc2: CellLoc,
     loc3: CellLoc,
+    flip_on_display: bool,
 }
 
 impl BetweenColumnsClue {
@@ -816,13 +817,14 @@ impl BetweenColumnsClue {
                 row_nr: rng.random_range(0..n_rows),
                 cell_nr: col3 as isize,
             },
+            flip_on_display: rng.random(),
         })
     }
 }
 
 static BETWEEN_COLUMN_CLEAR: &[ClueExplanationChunk] = explanation![
     Loc3:
-    "between column 3", %{loc1}, %{loc2}, %{loc3},
+    %{loc1}, "must be impossible because it requires", %{loc2}, "and", %{loc3},
 ];
 
 impl PuzzleClue for BetweenColumnsClue {
@@ -867,7 +869,12 @@ impl PuzzleClue for BetweenColumnsClue {
                 sprite.custom_size = Some(sprite_size);
                 sprite
             };
-            let (sprite1, color1) = puzzle.cell_answer_display(self.loc1);
+            let (loc1, loc3) = if self.flip_on_display {
+                (self.loc3, self.loc1)
+            } else {
+                (self.loc1, self.loc3)
+            };
+            let (sprite1, color1) = puzzle.cell_answer_display(loc1);
             builder
                 .spawn((
                     Sprite::from_color(color1, sprite_size),
@@ -889,7 +896,7 @@ impl PuzzleClue for BetweenColumnsClue {
                     Transform::from_xyz(0., 0., 1.),
                     NO_PICK,
                 ));
-            let (sprite3, color3) = puzzle.cell_answer_display(self.loc3);
+            let (sprite3, color3) = puzzle.cell_answer_display(loc3);
             builder
                 .spawn((
                     Sprite::from_color(color3, sprite_size),
