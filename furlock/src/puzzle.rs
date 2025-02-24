@@ -23,6 +23,10 @@ impl CellLoc {
         let shift = (mirror.cell_nr as isize - self.cell_nr as isize) * 2;
         self.shift(shift)
     }
+
+    pub fn colspan(&self, other: &CellLoc) -> usize {
+        self.cell_nr.abs_diff(other.cell_nr).saturating_sub(1)
+    }
 }
 
 #[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

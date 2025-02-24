@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use bevy::{prelude::*, utils::HashMap};
 use rand::Rng;
 use typemap::{ShareCloneMap, TypeMap};
@@ -63,6 +65,10 @@ impl ClueExplanation {
             &Ch::Accessor(name, f) => {
                 ResCh::Accessed(name, f(&self.payload).unwrap_or(&FailedToAccess))
             }
+            &Ch::Eval(expr, f) => ResCh::Eval(
+                expr,
+                f(&self.payload).unwrap_or_else(|| FailedToAccess.as_cell_display_string()),
+            ),
         })
     }
 }
@@ -97,7 +103,7 @@ impl_clue_explanation! {
 // }
 
 pub trait CellDisplay: std::fmt::Debug {
-    fn as_string(&self) -> String;
+    fn as_cell_display_string(&self) -> String;
     fn spawn_into(&self, puzzle: &Puzzle, parent: &mut ChildBuilder);
     fn loc_index(&self) -> Option<&CellLocIndex> {
         None
@@ -108,7 +114,7 @@ pub trait CellDisplay: std::fmt::Debug {
 pub struct FailedToAccess;
 
 impl CellDisplay for FailedToAccess {
-    fn as_string(&self) -> String {
+    fn as_cell_display_string(&self) -> String {
         "<<<?>>>".into()
     }
 
@@ -132,12 +138,14 @@ pub enum ClueExplanationChunk {
         &'static str,
         fn(&ClueExplanationPayload) -> Option<&dyn CellDisplay>,
     ),
+    Eval(&'static str, fn(&ClueExplanationPayload) -> Option<String>),
 }
 
-#[derive(Debug, Reflect, Clone, Copy)]
+#[derive(Debug, Reflect, Clone)]
 pub enum ClueExplanationResolvedChunk<'d> {
     Text(&'static str),
     Accessed(&'static str, &'d dyn CellDisplay),
+    Eval(&'static str, String),
 }
 
 pub trait PuzzleClue: std::fmt::Debug {
@@ -278,7 +286,7 @@ impl std::ops::Deref for SelectionProxy {
 }
 
 impl CellDisplay for SelectionProxy {
-    fn as_string(&self) -> String {
+    fn as_cell_display_string(&self) -> String {
         format!(
             "Cell[r{} c{} i{}]",
             self.loc.row_nr, self.loc.cell_nr, self.index
@@ -321,6 +329,12 @@ struct Loc2Mirrored {
     loc1: SelectionProxy,
     loc2: SelectionProxy,
     loc2_p: SelectionProxy,
+}
+
+impl Loc2Mirrored {
+    pub fn colspan(&self) -> usize {
+        self.loc1.loc.colspan(&self.loc2.loc)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -517,6 +531,16 @@ macro_rules! explanation {
     ( $typ:ty : [] , $( $accum:tt )* ) => {
         &[ $($accum)* ]
     };
+    ( $typ:ty : [* {|$p:pat_param| $e:expr } , $( $rest:tt )*] , $( $accum:tt )* ) => {
+        explanation!(
+            $typ: [$($rest)*] ,
+            $($accum)*
+            ClueExplanationChunk::Eval(
+                stringify!($e),
+                |p| p.lookup::<$typ>().map(|$p| $e),
+            ),
+        )
+    };
     ( $typ:ty : [% { $name:ident } , $( $rest:tt )*] , $( $accum:tt )* ) => {
         explanation!(
             $typ: [$($rest)*] ,
@@ -543,12 +567,16 @@ macro_rules! explanation {
 
 static SAME_COLUMN_SOLO: &[ClueExplanationChunk] = explanation![
     Loc2:
-    %{loc2}, "is selected, therefore", %{loc1}, "must be selected.",
+    %{loc1}, "must be selected, because in the same column",
+    %{loc2}, "is selected.",
+    // %{loc2}, "is selected, therefore", %{loc1}, "must be selected in the same column.",
 ];
 
 static SAME_COLUMN_CLEAR: &[ClueExplanationChunk] = explanation![
     Loc2:
-    %{loc2}, "is not possible, therefore", %{loc1}, "must be impossible.",
+    // %{loc2}, "is not possible, therefore", %{loc1}, "must be impossible in the same column.",
+    %{loc1}, "must be impossible, because in the same column",
+    %{loc2}, "is not possible.",
 ];
 
 impl PuzzleClue for SameColumnClue {
@@ -658,6 +686,10 @@ impl AdjacentColumnClue {
             },
         })
     }
+
+    pub fn colspan(&self) -> usize {
+        self.loc1.colspan(&self.loc2)
+    }
 }
 
 static ADJACENT_COLUMN_SOLO: &[ClueExplanationChunk] = explanation![
@@ -667,7 +699,11 @@ static ADJACENT_COLUMN_SOLO: &[ClueExplanationChunk] = explanation![
 
 static ADJACENT_COLUMN_CLEAR: &[ClueExplanationChunk] = explanation![
     Loc2Mirrored:
-    %{loc1}, "must have", %{loc2}, "on one side or the other (", %{loc2_p}, ")",
+    // "Neither", %{loc2}, "nor", %{loc2_p}, *{|l| format!("are possible {} columns removed from", l.colspan())},
+    // %{loc1}, "therefore it is also impossible.",
+    %{loc1}, "must be impossible, because",
+    %{loc2}, "or", %{loc2_p},
+    *{|l| format!("must be possible {} columns removed from it.", l.colspan())},
 ];
 
 impl PuzzleClue for AdjacentColumnClue {
@@ -727,12 +763,7 @@ impl PuzzleClue for AdjacentColumnClue {
                 sprite.custom_size = Some(sprite_size);
                 sprite
             };
-            let colspan = self
-                .loc1
-                .cell_nr
-                .abs_diff(self.loc2.cell_nr)
-                .saturating_sub(1);
-            builder.spawn(Text2d::new(format!("{colspan}")));
+            builder.spawn(Text2d::new(format!("{}", self.colspan())));
             let (sprite1, color1) = puzzle.cell_answer_display(self.loc1);
             builder
                 .spawn((

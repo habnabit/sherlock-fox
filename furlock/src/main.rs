@@ -167,6 +167,28 @@ fn show_clue_explanation(
     q_cell: Query<(Entity, &DisplayCellButton)>,
     // clues: Res<Assets<DynPuzzleClue>>,
 ) {
+    #[derive(Debug, Default)]
+    struct TextTaker(Option<String>);
+    impl TextTaker {
+        fn insert_str(&mut self, input: &str) {
+            self.0.get_or_insert_default().push_str(input);
+        }
+        fn insert_string(&mut self, input: String) {
+            match &mut self.0 {
+                Some(s) => s.push_str(&input),
+                p @ None => *p = Some(input),
+            }
+        }
+        fn drain_into(&mut self, parent: &mut ChildBuilder) {
+            if let Some(text) = self.0.take() {
+                parent.spawn((
+                    Text::new(text),
+                    BackgroundColor(Color::hsla(0., 0., 0.1, 0.8)),
+                    NO_PICK,
+                ));
+            }
+        }
+    }
     let Ok((clue_display_entity, clue_component)) = q_clue.get_single() else {
         return;
     };
@@ -198,32 +220,26 @@ fn show_clue_explanation(
         ))
         .with_children(|parent| {
             use ClueExplanationResolvedChunk as Ch;
+            let mut built_text = TextTaker::default();
             for c in explanation.resolved() {
                 match c {
                     Ch::Text(s) => {
-                        parent.spawn((
-                            Text::new(s),
-                            BackgroundColor(Color::hsla(0., 0., 0.1, 0.8)),
-                            NO_PICK,
-                        ));
+                        built_text.insert_str(s);
                     }
-                    Ch::Accessed(name, cell_display) => {
+                    Ch::Accessed(_name, cell_display) => {
+                        built_text.drain_into(parent);
                         cell_display.spawn_into(*q_puzzle, parent);
                         if let Some(&loc) = cell_display.loc_index() {
                             cell_highlight.insert(loc);
                         }
                         // parent.spawn(Text::new(format!("<{name}: {cell_display:p}>")));
                     }
+                    Ch::Eval(_expr, result) => {
+                        built_text.insert_string(result);
+                    }
                 }
             }
-
-            // parent.spawn(Text::new("text 1 "));
-            // parent.spawn((Node {
-            //     width: Val::Px(25.),
-            //     height: Val::Px(25.),
-            //     ..Default::default()
-            // }, BackgroundColor(Color::hsla(0., 1., 0.8, 1.))));
-            // parent.spawn(Text::new(" text 2"));
+            built_text.drain_into(parent);
         });
 
     for (cell, button) in &q_cell {
@@ -480,6 +496,7 @@ impl Default for FitTransformAnimationBundle {
 struct ExplanationBounceAnimationBundle {
     target: AnimationTarget,
     scale_tracker: ExplanationBounceEdge,
+    translation_tracker: FitTransformEdge,
 }
 
 impl ExplanationBounceAnimationBundle {
@@ -490,6 +507,7 @@ impl ExplanationBounceAnimationBundle {
                 player,
             },
             scale_tracker: Default::default(),
+            translation_tracker: Default::default(),
         }
     }
 }
