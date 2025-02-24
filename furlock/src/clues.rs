@@ -79,6 +79,9 @@ impl From<(&Loc2, &'static [ClueExplanationChunk])> for ClueExplanation {
 pub trait CellDisplay: std::fmt::Debug {
     fn as_string(&self) -> String;
     fn spawn_into(&self, puzzle: &Puzzle, parent: &mut ChildBuilder);
+    fn loc_index(&self) -> Option<&CellLocIndex> {
+        None
+    }
 }
 
 #[derive(Debug, Reflect, Clone, Copy)]
@@ -280,6 +283,10 @@ impl CellDisplay for SelectionProxy {
                 NO_PICK,
             ))
             .with_child((Node::default(), image_node, NO_PICK));
+    }
+
+    fn loc_index(&self) -> Option<&CellLocIndex> {
+        Some(&self.index_)
     }
 }
 

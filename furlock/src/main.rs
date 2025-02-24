@@ -164,6 +164,7 @@ fn show_clue_explanation(
     q_puzzle: Single<&Puzzle>,
     q_clue: Query<(Entity, &ExplainClueComponent)>,
     q_clues: Query<(Entity, &PuzzleClueComponent)>,
+    q_cell: Query<(Entity, &DisplayCellButton)>,
     // clues: Res<Assets<DynPuzzleClue>>,
 ) {
     let Ok((clue_display_entity, clue_component)) = q_clue.get_single() else {
@@ -180,6 +181,7 @@ fn show_clue_explanation(
         return;
     };
     commands.entity(clue_entity).insert(ExplanationHilight);
+    let mut cell_highlight = HashSet::new();
     commands
         .entity(clue_display_entity)
         .insert((
@@ -202,6 +204,9 @@ fn show_clue_explanation(
                     }
                     Ch::Accessed(name, cell_display) => {
                         cell_display.spawn_into(*q_puzzle, parent);
+                        if let Some(&loc) = cell_display.loc_index() {
+                            cell_highlight.insert(loc);
+                        }
                         // parent.spawn(Text::new(format!("<{name}: {cell_display:p}>")));
                     }
                 }
@@ -215,20 +220,26 @@ fn show_clue_explanation(
             // }, BackgroundColor(Color::hsla(0., 1., 0.8, 1.))));
             // parent.spawn(Text::new(" text 2"));
         });
+
+    for (cell, button) in &q_cell {
+        if cell_highlight.contains(&button.index) {
+            commands.entity(cell).insert(ExplanationHilight);
+        }
+    }
 }
 
 fn hide_clue_explanation(
     mut commands: Commands,
     // q_puzzle: Single<&Puzzle>,
     q_explanation: Query<(Entity, &ExplainClueComponent)>,
-    q_clues: Query<(Entity, &PuzzleClueComponent), With<ExplanationHilight>>,
+    q_clues: Query<Entity, With<ExplanationHilight>>,
     mut writer: EventWriter<UpdateCellIndex>,
 ) {
     for (explanation_entity, explanation) in &q_explanation {
         commands.entity(explanation_entity).despawn_recursive();
         writer.send(explanation.update.clone());
     }
-    for (clue_entity, clue) in &q_clues {
+    for clue_entity in &q_clues {
         commands.entity(clue_entity).remove::<ExplanationHilight>();
     }
 }
@@ -413,6 +424,7 @@ struct HoverAnimationBundle {
     target: AnimationTarget,
     scale_tracker: HoverScaleEdge,
     alpha_tracker: HoverAlphaEdge,
+    explanation_tracker: ExplanationBounceEdge,
 }
 
 impl HoverAnimationBundle {
@@ -424,6 +436,7 @@ impl HoverAnimationBundle {
             },
             scale_tracker: Default::default(),
             alpha_tracker: Default::default(),
+            explanation_tracker: Default::default(),
         }
     }
 }
