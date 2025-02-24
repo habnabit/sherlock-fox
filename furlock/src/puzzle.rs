@@ -255,11 +255,19 @@ impl PuzzleRow {
         self.cell_selection.len()
     }
 
-    pub fn display_sprite(&self, index: usize) -> Sprite {
-        Sprite::from_atlas_image(self.atlas.clone(), TextureAtlas {
+    pub fn display_atlas(&self, index: usize) -> TextureAtlas {
+        TextureAtlas {
             layout: self.atlas_layout.clone(),
             index: self.cell_display[index].atlas_index,
-        })
+        }
+    }
+
+    pub fn display_image_node(&self, index: usize) -> ImageNode {
+        ImageNode::from_atlas_image(self.atlas.clone(), self.display_atlas(index))
+    }
+
+    pub fn display_sprite(&self, index: usize) -> Sprite {
+        Sprite::from_atlas_image(self.atlas.clone(), self.display_atlas(index))
     }
 
     pub fn display_color(&self, index: usize) -> Color {
@@ -313,6 +321,16 @@ impl Puzzle {
         (
             row.display_sprite(loc.cell_nr as usize),
             row.display_color(loc.cell_nr as usize),
+        )
+    }
+
+    // TODO: too many `as usize`
+    // TODO: also these names and return types aren't great
+    pub fn cell_index_display(&self, index: CellLocIndex) -> (ImageNode, Color) {
+        let row = &self.rows[index.loc.row_nr];
+        (
+            row.display_image_node(index.index),
+            row.display_color(index.index),
         )
     }
 

@@ -23,8 +23,8 @@ use bevy::{
 };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use clues::{
-    AdjacentColumnClue, BetweenColumnsClue, ClueExplanation, DynPuzzleClue, PuzzleClues,
-    SameColumnClue,
+    AdjacentColumnClue, BetweenColumnsClue, ClueExplanation, ClueExplanationResolvedChunk,
+    DynPuzzleClue, PuzzleClues, SameColumnClue,
 };
 use petgraph::graph::NodeIndex;
 use puzzle::{
@@ -45,7 +45,7 @@ fn main() {
         .init_resource::<Assets<DynPuzzleClue>>()
         .init_resource::<SeededRng>()
         .init_state::<ClueExplanationState>()
-        // .add_plugins(WorldInspectorPlugin::new())
+        .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddClue>()
         .add_event::<AddRow>()
         .add_event::<UpdateCellDisplay>()
@@ -90,6 +90,7 @@ fn main() {
         .add_observer(interact_drag_ui_move)
         .add_observer(mouse_out_fit)
         .add_observer(mouse_over_fit)
+        .add_observer(show_clue_highlight)
         .add_observer(show_dyn_clue)
         .add_systems(Startup, setup)
         .add_systems(
@@ -144,6 +145,9 @@ enum ClueExplanationState {
 }
 
 #[derive(Debug, Component, Reflect)]
+struct ExplanationHilight;
+
+#[derive(Debug, Component, Reflect)]
 struct ExplainClueComponent {
     clue: Handle<DynPuzzleClue>,
     update: UpdateCellIndex,
@@ -151,19 +155,28 @@ struct ExplainClueComponent {
 
 fn show_clue_explanation(
     mut commands: Commands,
+    q_puzzle: Single<&Puzzle>,
     q_clue: Single<&ExplainClueComponent>,
+    q_clues: Query<(Entity, &PuzzleClueComponent)>,
     clues: Res<Assets<DynPuzzleClue>>,
 ) {
-    let Some(clue) = clues.get(q_clue.clue.id()) else {
+    let clue_id = q_clue.clue.id();
+    let Some(clue) = clues.get(clue_id) else {
         return;
     };
+    let Some(ref explanation) = q_clue.update.explanation else {
+        return;
+    };
+    let Some((clue_entity, _)) = q_clues.iter().find(|(_, c)| c.0.id() == clue_id) else {
+        return;
+    };
+    commands.entity(clue_entity).insert(ExplanationHilight);
     commands
         .spawn((
             Node {
-                top: Val::Px(0.),
-                left: Val::Px(0.),
-                width: Val::Percent(100.),
-                height: Val::Percent(100.),
+                width: Val::Vw(35.),
+                height: Val::Vh(30.),
+                margin: UiRect::all(Val::Auto),
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
                 ..Default::default()
@@ -171,11 +184,19 @@ fn show_clue_explanation(
             BackgroundColor(Color::hsla(0., 0., 0.3, 0.8)),
         ))
         .with_children(|parent| {
-            let explanation = q_clue.update.explanation.as_ref().map(|e| e.format());
-            parent.spawn(Text::new(format!(
-                "{:?}@{:#?}\n{:#?}",
-                q_clue.update.op, q_clue.update.index, explanation
-            )));
+            use ClueExplanationResolvedChunk as Ch;
+            for c in explanation.resolved() {
+                match c {
+                    Ch::Text(s) => {
+                        parent.spawn(Text::new(s));
+                    }
+                    Ch::Accessed(name, cell_display) => {
+                        cell_display.spawn_into(*q_puzzle, parent);
+                        // parent.spawn(Text::new(format!("<{name}: {cell_display:p}>")));
+                    }
+                }
+            }
+
             // parent.spawn(Text::new("text 1 "));
             // parent.spawn((Node {
             //     width: Val::Px(25.),
@@ -187,6 +208,18 @@ fn show_clue_explanation(
 }
 
 fn hide_clue_explanation() {}
+
+fn show_clue_highlight(
+    ev: Trigger<OnInsert, ExplanationHilight>,
+    mut q_transform: Query<&mut Transform>,
+) {
+    let Ok(mut transform) = q_transform.get_mut(ev.entity()) else {
+        return;
+    };
+    transform.translation.z += 10.;
+    transform.scale.x = 2.;
+    transform.scale.y = 2.;
+}
 
 #[derive(Debug, Component, Reflect)]
 struct PuzzleClueComponent(Handle<DynPuzzleClue>);

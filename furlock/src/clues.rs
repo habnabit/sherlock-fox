@@ -4,7 +4,7 @@ use typemap::{ShareCloneMap, TypeMap};
 
 use crate::{
     puzzle::{CellLoc, CellLocIndex, Puzzle, UpdateCellIndexOperation},
-    UpdateCellIndex,
+    FitWithinBundle, UpdateCellIndex,
 };
 
 pub type PuzzleAdvance = Option<UpdateCellIndex>;
@@ -56,18 +56,15 @@ pub struct ClueExplanation {
 }
 
 impl ClueExplanation {
-    pub fn format(&self) -> Vec<String> {
-        use ClueExplanationChunk::*;
-        self.chunks
-            .iter()
-            .map(|c| match c {
-                Text(s) => (*s).to_owned(),
-                Accessor(f) => f(&self.payload)
-                    .map(|d| d.as_string())
-                    .unwrap_or_else(|| "<<<NONE>>>".to_owned()),
-                NamedCell(_) => todo!(),
-            })
-            .collect()
+    pub fn resolved(&self) -> impl Iterator<Item = ClueExplanationResolvedChunk> {
+        use ClueExplanationChunk as Ch;
+        use ClueExplanationResolvedChunk as ResCh;
+        self.chunks.iter().map(|c| match c {
+            &Ch::Text(s) => ResCh::Text(s),
+            &Ch::Accessor(name, f) => {
+                ResCh::Accessed(name, f(&self.payload).unwrap_or(&FailedToAccess))
+            }
+        })
     }
 }
 
@@ -79,15 +76,45 @@ impl From<(&Loc2, &'static [ClueExplanationChunk])> for ClueExplanation {
     }
 }
 
-pub trait CellDisplay {
+pub trait CellDisplay: std::fmt::Debug {
     fn as_string(&self) -> String;
+    fn spawn_into(&self, puzzle: &Puzzle, parent: &mut ChildBuilder);
+}
+
+#[derive(Debug, Reflect, Clone, Copy)]
+pub struct FailedToAccess;
+
+impl CellDisplay for FailedToAccess {
+    fn as_string(&self) -> String {
+        "<<<?>>>".into()
+    }
+
+    fn spawn_into(&self, _puzzle: &Puzzle, parent: &mut ChildBuilder) {
+        parent.spawn((
+            Node {
+                width: Val::Px(32.),
+                height: Val::Px(32.),
+                margin: UiRect::horizontal(Val::Px(5.)),
+                ..Default::default()
+            },
+            BackgroundColor(Color::hsla(0., 0., 0., 1.)),
+        ));
+    }
 }
 
 #[derive(Debug, Reflect, Clone, Copy)]
 pub enum ClueExplanationChunk {
     Text(&'static str),
-    NamedCell(&'static str),
-    Accessor(fn(&ClueExplanationPayload) -> Option<&dyn CellDisplay>),
+    Accessor(
+        &'static str,
+        fn(&ClueExplanationPayload) -> Option<&dyn CellDisplay>,
+    ),
+}
+
+#[derive(Debug, Reflect, Clone, Copy)]
+pub enum ClueExplanationResolvedChunk<'d> {
+    Text(&'static str),
+    Accessed(&'static str, &'d dyn CellDisplay),
 }
 
 pub trait PuzzleClue: std::fmt::Debug {
@@ -233,6 +260,25 @@ impl CellDisplay for SelectionProxy {
             "Cell[r{} c{} i{}]",
             self.loc.row_nr, self.loc.cell_nr, self.index
         )
+    }
+
+    fn spawn_into(&self, puzzle: &Puzzle, parent: &mut ChildBuilder) {
+        let (mut image_node, color) = puzzle.cell_index_display(self.index_);
+        // let button_size = Vec2::new(32., 32.);
+        // sprite.custom_size = Some(button_size - Vec2::new(5., 5.));
+        image_node.color = Color::hsla(0., 0., 1., 1.);
+        parent
+            .spawn((
+                Node {
+                    width: Val::Px(42.),
+                    height: Val::Px(42.),
+                    margin: UiRect::horizontal(Val::Px(5.)),
+                    padding: UiRect::all(Val::Px(5.)),
+                    ..Default::default()
+                },
+                BackgroundColor(color),
+            ))
+            .with_child((Node::default(), image_node));
     }
 }
 
@@ -406,6 +452,7 @@ impl<'p, R> ImplicationResolver<'p, IfThen<Loc3Mirrored, R>> {
             .cells
             .iter()
             .map(|c| proxy(*c))
+            // TODO: permutations is too many.. we don't need [1, 2, 3] and [1, 3, 2]
             .permutations(3)
             .map(move |mut locs| {
                 let (Some(loc3), Some(loc2), Some(loc1)) = (locs.pop(), locs.pop(), locs.pop())
@@ -442,28 +489,53 @@ macro_rules! explanation {
         &[ $($accum)* ]
     };
     ( $typ:ty : [% { $name:ident } , $( $rest:tt )*] , $( $accum:tt )* ) => {
-        explanation!($typ: [$($rest)*] , $($accum)* ClueExplanationChunk::Accessor(|p| p.lookup::<$typ>().map(|x| &x.$name as &dyn CellDisplay)), )
-        // explanation!([$($rest)*] , $($accum)* ClueExplanationChunk::NamedCell(stringify!($name)), )
+        explanation!(
+            $typ: [$($rest)*] ,
+            $($accum)*
+            ClueExplanationChunk::Accessor(
+                stringify!($name),
+                |p| p.lookup::<$typ>().map(|x| &x.$name as &dyn CellDisplay),
+            ),
+        )
     };
     ( $typ:ty : [$text:expr , $( $rest:tt )*] , $( $accum:tt )* ) => {
-        explanation!($typ: [$($rest)*] , $($accum)* ClueExplanationChunk::Text($text), )
+        explanation!(
+            $typ: [$($rest)*] ,
+            $($accum)*
+            ClueExplanationChunk::Text($text),
+        )
     };
     ( $typ:ty : $( $rest:tt )* ) => {
-        explanation!( $typ: [$($rest)*] , )
+        explanation!(
+            $typ: [$($rest)*] ,
+        )
     };
 }
 
+trace_macros!(true);
+
 static SAME_COLUMN_SOLO: &[ClueExplanationChunk] = explanation![
     Loc2:
-    %{loc2}, " is selected, therefore ", %{loc1}, " must be selected.",
+    %{loc2}, "is selected, therefore", %{loc1}, "must be selected.",
 ];
 
 static SAME_COLUMN_CLEAR: &[ClueExplanationChunk] = explanation![
     Loc2:
-    %{loc2}, " is not possible, therefore ", %{loc1}, " must be impossible.",
+    %{loc2}, "is not possible, therefore", %{loc1}, "must be impossible.",
 ];
 
-// trace_macros!(false);
+static balls: &[ClueExplanationChunk] = &[
+    ClueExplanationChunk::Accessor(stringify!(loc2), |p| {
+        p.lookup::<Loc2>().map(|x| &x.loc2 as &dyn CellDisplay)
+    }),
+    ClueExplanationChunk::Text(" is not possible, therefore "),
+    ClueExplanationChunk::Accessor(stringify!(loc1), |p| {
+        p.lookup::<Loc2>().map(|x| &x.loc1 as &dyn CellDisplay)
+    }),
+    ClueExplanationChunk::Text(" must be impossible."),
+];
+
+trace_macros!(false);
 
 // static SAME_COLUMN_CLEAR: &[ClueExplanationChunk] = &[
 //     ClueExplanationChunk::Text("same column clear"),
