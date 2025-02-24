@@ -675,8 +675,8 @@ fn spawn_row(
             let Some(clue): Option<Handle<DynPuzzleClue>> = (try {
                 match rng.0.random_range(0..3) {
                     0 => clue_assets.add(SameColumnClue::new_random(&mut rng.0, &puzzle)?),
+                    _ => clue_assets.add(AdjacentColumnClue::new_random(&mut rng.0, &puzzle)?),
                     _ => clue_assets.add(BetweenColumnsClue::new_random(&mut rng.0, &puzzle)?),
-                    2 => clue_assets.add(AdjacentColumnClue::new_random(&mut rng.0, &puzzle)?),
                     _ => unreachable!(),
                 }
             }) else {
