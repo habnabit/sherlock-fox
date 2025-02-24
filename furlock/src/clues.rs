@@ -703,7 +703,7 @@ static ADJACENT_COLUMN_CLEAR: &[ClueExplanationChunk] = explanation![
     // %{loc1}, "therefore it is also impossible.",
     %{loc1}, "must be impossible, because",
     %{loc2}, "or", %{loc2_p},
-    *{|l| format!("must be possible {} columns removed from it.", l.colspan())},
+    *{|l| format!("must be possible at {} columns removed.", l.colspan())},
 ];
 
 impl PuzzleClue for AdjacentColumnClue {
