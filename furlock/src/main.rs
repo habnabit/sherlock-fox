@@ -38,6 +38,11 @@ use rand::{
 use rand_chacha::ChaCha8Rng;
 use uuid::Uuid;
 
+const NO_PICK: PickingBehavior = PickingBehavior {
+    should_block_lower: false,
+    is_hoverable: false,
+};
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
@@ -187,7 +192,7 @@ fn show_clue_explanation(
             for c in explanation.resolved() {
                 match c {
                     Ch::Text(s) => {
-                        parent.spawn(Text::new(s));
+                        parent.spawn((Text::new(s), NO_PICK));
                     }
                     Ch::Accessed(name, cell_display) => {
                         cell_display.spawn_into(*q_puzzle, parent);
@@ -675,10 +680,7 @@ fn add_row(
                                         .with_child((
                                             sprite,
                                             Transform::from_xyz(0., 0., 1.),
-                                            PickingBehavior {
-                                                should_block_lower: false,
-                                                is_hoverable: false,
-                                            },
+                                            NO_PICK,
                                             DisplayCellButton {
                                                 index: CellLocIndex { loc, index },
                                             },

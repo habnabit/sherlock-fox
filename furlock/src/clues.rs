@@ -4,7 +4,7 @@ use typemap::{ShareCloneMap, TypeMap};
 
 use crate::{
     puzzle::{CellLoc, CellLocIndex, Puzzle, UpdateCellIndexOperation},
-    FitWithinBundle, UpdateCellIndex,
+    FitWithinBundle, UpdateCellIndex, NO_PICK,
 };
 
 pub type PuzzleAdvance = Option<UpdateCellIndex>;
@@ -277,8 +277,9 @@ impl CellDisplay for SelectionProxy {
                     ..Default::default()
                 },
                 BackgroundColor(color),
+                NO_PICK,
             ))
-            .with_child((Node::default(), image_node));
+            .with_child((Node::default(), image_node, NO_PICK));
     }
 }
 
@@ -578,10 +579,7 @@ impl PuzzleClue for SameColumnClue {
                 .with_child((
                     size_sprite(sprite1),
                     Transform::from_xyz(0., 0., 1.),
-                    PickingBehavior {
-                        should_block_lower: false,
-                        is_hoverable: false,
-                    },
+                    NO_PICK,
                 ));
             let (sprite2, color2) = puzzle.cell_answer_display(self.loc2());
             builder
@@ -592,10 +590,7 @@ impl PuzzleClue for SameColumnClue {
                 .with_child((
                     size_sprite(sprite2),
                     Transform::from_xyz(0., 0., 1.),
-                    PickingBehavior {
-                        should_block_lower: false,
-                        is_hoverable: false,
-                    },
+                    NO_PICK,
                 ));
             if let Some(loc3) = self.loc3() {
                 let (sprite3, color3) = puzzle.cell_answer_display(loc3);
@@ -607,10 +602,7 @@ impl PuzzleClue for SameColumnClue {
                     .with_child((
                         size_sprite(sprite3),
                         Transform::from_xyz(0., 0., 1.),
-                        PickingBehavior {
-                            should_block_lower: false,
-                            is_hoverable: false,
-                        },
+                        NO_PICK,
                     ));
             }
         })
@@ -712,10 +704,7 @@ impl PuzzleClue for AdjacentColumnClue {
                 .with_child((
                     size_sprite(sprite1),
                     Transform::from_xyz(0., 0., 1.),
-                    PickingBehavior {
-                        should_block_lower: false,
-                        is_hoverable: false,
-                    },
+                    NO_PICK,
                 ));
             let (sprite2, color2) = puzzle.cell_answer_display(self.loc2);
             builder
@@ -726,10 +715,7 @@ impl PuzzleClue for AdjacentColumnClue {
                 .with_child((
                     size_sprite(sprite2),
                     Transform::from_xyz(0., 0., 1.),
-                    PickingBehavior {
-                        should_block_lower: false,
-                        is_hoverable: false,
-                    },
+                    NO_PICK,
                 ));
         })
     }
@@ -810,10 +796,7 @@ impl PuzzleClue for BetweenColumnsClue {
                 .with_child((
                     size_sprite(sprite1),
                     Transform::from_xyz(0., 0., 1.),
-                    PickingBehavior {
-                        should_block_lower: false,
-                        is_hoverable: false,
-                    },
+                    NO_PICK,
                 ));
             let (sprite2, color2) = puzzle.cell_answer_display(self.loc2);
             builder
@@ -824,10 +807,7 @@ impl PuzzleClue for BetweenColumnsClue {
                 .with_child((
                     size_sprite(sprite2),
                     Transform::from_xyz(0., 0., 1.),
-                    PickingBehavior {
-                        should_block_lower: false,
-                        is_hoverable: false,
-                    },
+                    NO_PICK,
                 ));
             let (sprite3, color3) = puzzle.cell_answer_display(self.loc3);
             builder
@@ -838,10 +818,7 @@ impl PuzzleClue for BetweenColumnsClue {
                 .with_child((
                     size_sprite(sprite3),
                     Transform::from_xyz(0., 0., 1.),
-                    PickingBehavior {
-                        should_block_lower: false,
-                        is_hoverable: false,
-                    },
+                    NO_PICK,
                 ));
         })
     }
