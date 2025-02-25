@@ -40,6 +40,10 @@ const NO_PICK: PickingBehavior = PickingBehavior {
     should_block_lower: false,
     is_hoverable: false,
 };
+const HOVER_PICK: PickingBehavior = PickingBehavior {
+    should_block_lower: true,
+    is_hoverable: true,
+};
 
 fn main() {
     App::new()
@@ -54,23 +58,30 @@ fn main() {
         .add_event::<UpdateCellDisplay>()
         .add_event::<UpdateCellIndex>()
         .register_asset_reflect::<DynPuzzleClue>()
-        .register_type::<AssignRandomColor>()
         .register_type::<Action>()
-        .register_type::<PushNewAction>()
+        .register_type::<AssignRandomColor>()
         .register_type::<CellLoc>()
         .register_type::<CellLocIndex>()
+        .register_type::<DisplayButtonbox>()
         .register_type::<DisplayCell>()
         .register_type::<DisplayCellButton>()
         .register_type::<DisplayMatrix>()
         .register_type::<DisplayRow>()
+        .register_type::<DisplayTopButton>()
         .register_type::<DragTarget>()
         .register_type::<DragUI>()
         .register_type::<DragUITarget>()
         .register_type::<DynPuzzleClue>()
+        .register_type::<ExplainClueComponent>()
+        .register_type::<ExplanationBounceEdge>()
+        .register_type::<ExplanationHilight>()
         .register_type::<FitHover>()
+        .register_type::<FitTransformEdge>()
         .register_type::<FitWithin>()
+        .register_type::<FitWithinBackground>()
         .register_type::<HoverAlphaEdge>()
         .register_type::<HoverScaleEdge>()
+        .register_type::<PushNewAction>()
         .register_type::<Puzzle>()
         .register_type::<PuzzleCellDisplay>()
         .register_type::<PuzzleCellSelection>()
@@ -78,35 +89,44 @@ fn main() {
         .register_type::<PuzzleClues>()
         .register_type::<PuzzleRow>()
         .register_type::<PuzzleSpawn>()
-        .register_type::<FitTransformEdge>()
         .register_type::<SameColumnClue>()
         .register_type::<SeededRng>()
-        .register_type::<FitWithinBackground>()
         .register_type::<UndoTree>()
         .register_type::<UndoTreeLocation>()
-        .register_type::<ExplainClueComponent>()
-        .register_type::<ExplanationBounceEdge>()
-        .register_type::<ExplanationHilight>()
         .register_type::<UpdateCellIndexOperation>()
         .add_observer(cell_clicked_down)
         .add_observer(cell_continue_drag)
         .add_observer(clue_explanation_clicked)
+        .add_observer(fit_clicked_down)
+        .add_observer(fit_clear_clicked)
+        .add_observer(fit_background_sprite)
+        .add_observer(fit_inside_buttonbox)
         .add_observer(fit_inside_cell)
         .add_observer(fit_inside_clues)
         .add_observer(fit_inside_matrix)
         .add_observer(fit_inside_puzzle)
         .add_observer(fit_inside_row)
         .add_observer(fit_to_transform)
-        .add_observer(fit_background_sprite)
+        // .add_observer(interact_button_click_generic::<OnAdd>(
+        // ))
+        .add_observer(interact_button_hover_generic::<OnAdd>(
+            HOVER_BUTTON_BORDER_COLOR,
+            CLICKED_BUTTON_BORDER_COLOR,
+        ))
+        .add_observer(interact_button_hover_generic::<OnRemove>(
+            DEFAULT_BUTTON_BORDER_COLOR,
+            DEFAULT_BUTTON_BORDER_COLOR,
+        ))
         .add_observer(interact_cell_generic::<OnAdd>(1.25))
         .add_observer(interact_cell_generic::<OnRemove>(1.0))
         .add_observer(interact_drag_ui_move)
+        .add_observer(make_fit_background_sprite)
         .add_observer(mouse_out_fit)
         .add_observer(mouse_over_fit)
-        .add_observer(show_clue_highlight)
         .add_observer(remove_clue_highlight)
-        .add_observer(make_fit_background_sprite)
+        .add_observer(show_clue_highlight)
         .add_observer(show_dyn_clue)
+        .add_observer(spawn_top_buttons)
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -334,7 +354,7 @@ fn show_clue_highlight(
     player.play(node_index).repeat();
     row_edge.0 = Some(node_index);
 
-    transform.translation.z += 10.;
+    // transform.translation.z += 10.;
 }
 
 fn remove_clue_highlight(
@@ -381,7 +401,7 @@ fn remove_clue_highlight(
     player.play(node_index);
     row_edge.0 = Some(node_index);
 
-    transform.translation.z -= 10.;
+    // transform.translation.z -= 10.;
 }
 
 #[derive(Debug, Component, Reflect)]
@@ -407,7 +427,7 @@ fn show_dyn_clue(
         .with_children(clue.spawn_into(puzzle));
 }
 
-#[derive(Reflect, Debug, Component, Default)]
+#[derive(Reflect, Debug, Clone, Component, Default)]
 struct FitWithin {
     rect: Rect,
 }
@@ -433,6 +453,9 @@ impl FitWithin {
 #[derive(Reflect, Debug, Component)]
 struct FitHover;
 
+#[derive(Reflect, Debug, Component)]
+struct FitClicked;
+
 #[derive(Bundle)]
 struct FitWithinBundle {
     fit: FitWithin,
@@ -454,6 +477,7 @@ impl FitWithinBundle {
 struct FitWithinBackground {
     index: usize,
     color: Color,
+    interactable: bool,
 }
 
 impl FitWithinBackground {
@@ -461,11 +485,19 @@ impl FitWithinBackground {
         FitWithinBackground {
             index,
             color: Color::hsla(0., 0., 1., 1.),
+            interactable: false,
         }
     }
 
-    fn new_colored(index: usize, color: Color) -> Self {
-        FitWithinBackground { index, color }
+    fn colored(self, color: Color) -> Self {
+        FitWithinBackground { color, ..self }
+    }
+
+    fn with_interaction(self, interactable: bool) -> Self {
+        FitWithinBackground {
+            interactable,
+            ..self
+        }
     }
 }
 
@@ -572,6 +604,9 @@ struct DisplayPuzzle;
 struct DisplayCluebox;
 
 #[derive(Reflect, Debug, Component)]
+struct DisplayButtonbox;
+
+#[derive(Reflect, Debug, Component)]
 struct DisplayClue;
 
 #[derive(Reflect, Debug, Component)]
@@ -594,6 +629,16 @@ struct DisplayCellButton {
 
 #[derive(Reflect, Debug, Component, Clone)]
 struct DisplayCellButtonEnlarge;
+
+#[derive(Reflect, Debug, Component, Clone)]
+struct DisplayTopButton(TopButtonAction);
+
+#[derive(Reflect, Debug, Clone, Copy)]
+enum TopButtonAction {
+    Undo,
+    Redo,
+    Clue,
+}
 
 #[derive(Reflect, Debug, Component, Clone, Default)]
 struct HoverScaleEdge(Option<NodeIndex>);
@@ -665,6 +710,24 @@ impl DragTarget {
             op: None,
         }
     }
+}
+
+fn spawn_top_buttons(ev: Trigger<OnAdd, DisplayButtonbox>, mut commands: Commands) {
+    commands.entity(ev.entity()).with_children(|parent| {
+        use TopButtonAction as B;
+        for action in [B::Undo, B::Redo, B::Clue] {
+            parent
+                .spawn((
+                    DisplayTopButton(action),
+                    FitWithinBundle::new(),
+                    FitWithinBackground::new(14)
+                        .colored(DEFAULT_BUTTON_BORDER_COLOR)
+                        .with_interaction(true),
+                    HOVER_PICK,
+                ))
+                .with_child(Text2d::new(format!("{:?}", action)));
+        }
+    });
 }
 
 fn spawn_row(
@@ -872,7 +935,7 @@ fn add_row(
                         row_spawner
                             .spawn((
                                 FitWithinBundle::new(),
-                                FitWithinBackground::new_colored(6, DEFAULT_CELL_BORDER_COLOR),
+                                FitWithinBackground::new(6).colored(DEFAULT_CELL_BORDER_COLOR),
                                 // RandomColorSprite::new(),
                                 DisplayCell { loc },
                             ))
@@ -958,6 +1021,19 @@ fn fit_inside_window(
     }
 }
 
+macro_rules! get_child {
+    ($ret:pat_param = $q:expr, $children:expr) => {
+        let q = &$q;
+        let Some($ret) = $children
+            .iter()
+            .filter_map(|e| q.get(*e).ok().map(|(entity, fit)| Child { entity, fit }))
+            .next()
+        else {
+            return;
+        };
+    };
+}
+
 fn fit_inside_puzzle(
     ev: Trigger<OnInsert, (FitWithin, DisplayPuzzle)>,
     q_about_target: Query<
@@ -968,27 +1044,39 @@ fn fit_inside_puzzle(
             Without<DisplayCluebox>,
         ),
     >,
-    q_matrix: Query<(Entity, &FitWithin, &DisplayMatrix)>,
-    q_clues: Query<(Entity, &FitWithin, &DisplayCluebox)>,
+    q_matrix: Query<(Entity, &FitWithin), With<DisplayMatrix>>,
+    q_clues: Query<(Entity, &FitWithin), With<DisplayCluebox>>,
+    q_buttons: Query<(Entity, &FitWithin), With<DisplayButtonbox>>,
     mut commands: Commands,
 ) {
     // info!("testing matrix fit of {:?}", ev.entity());
     let Ok((within, children)) = q_about_target.get(ev.entity()) else {
         return;
     };
-    let Some(matrix) = children.iter().filter_map(|e| q_matrix.get(*e).ok()).next() else {
-        return;
-    };
-    let Some(clues) = children.iter().filter_map(|e| q_clues.get(*e).ok()).next() else {
-        return;
-    };
+    struct Child<'f> {
+        entity: Entity,
+        fit: &'f FitWithin,
+    }
+    get_child!(matrix = q_matrix, children);
+    get_child!(clues = q_clues, children);
+    get_child!(buttons = q_buttons, children);
     let fit = within.rect;
+    let buttonbox_width = fit.width() / 6.;
+    let buttonbox_x = fit.max.x - buttonbox_width;
     let cluebox_height = fit.height() / 4.;
     let cluebox_y = fit.max.y - cluebox_height;
-    let matrix_rect = Rect::new(fit.min.x, fit.min.y, fit.max.x, cluebox_y);
-    let cluebox_rect = Rect::new(fit.min.x, cluebox_y, fit.max.x, fit.max.y);
-    matrix.1.set_rect(&mut commands, matrix.0, matrix_rect);
-    clues.1.set_rect(&mut commands, clues.0, cluebox_rect);
+    let matrix_rect = Rect::new(fit.min.x, fit.min.y, buttonbox_x, cluebox_y);
+    let cluebox_rect = Rect::new(fit.min.x, cluebox_y, buttonbox_x, fit.max.y);
+    let buttonbox_rect = Rect::new(buttonbox_x, fit.min.y, fit.max.x, fit.max.y);
+    matrix
+        .fit
+        .set_rect(&mut commands, matrix.entity, matrix_rect);
+    clues
+        .fit
+        .set_rect(&mut commands, clues.entity, cluebox_rect);
+    buttons
+        .fit
+        .set_rect(&mut commands, buttons.entity, buttonbox_rect);
 }
 
 fn fit_inside_clues(
@@ -1014,6 +1102,34 @@ fn fit_inside_clues(
         let clue_rect = Rect::new(current_x, fit.min.y, new_x, fit.max.y);
         fit_within.set_rect(&mut commands, entity, clue_rect);
         current_x = new_x;
+    }
+}
+
+fn fit_inside_buttonbox(
+    ev: Trigger<OnInsert, (FitWithin, DisplayButtonbox)>,
+    q_about_target: Query<
+        (&FitWithin, &Children),
+        (With<DisplayButtonbox>, Without<DisplayTopButton>),
+    >,
+    q_children: Query<(Entity, &FitWithin, &DisplayTopButton)>,
+    mut commands: Commands,
+) {
+    let Ok((within, children)) = q_about_target.get(ev.entity()) else {
+        return;
+    };
+    let children = children
+        .iter()
+        .filter_map(|e| q_children.get(*e).ok())
+        .collect::<Vec<_>>();
+    let fit = within.rect.inflate(-10.);
+    // let fit_height = fit.height();
+    let row_height = 50.;
+    let mut current_y = fit.min.y;
+    for (entity, fit_within, _) in children {
+        let new_y = current_y + row_height + 20.;
+        let row_rect = Rect::new(fit.min.x, current_y, fit.max.x, new_y).inflate(-5.);
+        fit_within.set_rect(&mut commands, entity, row_rect);
+        current_y = new_y;
     }
 }
 
@@ -1150,7 +1266,10 @@ fn fit_to_transform(
     };
     // info!("fit to transform before={fit:?}");
     // TODO: unsure why this needs to be Y-reflected
-    let translate = (fit.rect.center() - parent_fit.rect.center()) * Vec2::new(1., -1.);
+    let new_translation = Vec3::from((
+        (fit.rect.center() - parent_fit.rect.center()) * Vec2::new(1., -1.),
+        1.,
+    ));
     let animation_info = q_animation
         .get_mut(entity)
         .ok()
@@ -1160,18 +1279,22 @@ fn fit_to_transform(
             Some((target, row_edge, player, graph))
         });
     if let Some((target, mut row_edge, mut player, graph)) = animation_info {
-        let mut translation = transform.translation;
-        translation.x = translate.x;
-        translation.y = translate.y;
+        // let mut translation = transform.translation;
+        // translation.x = translate.x;
+        // translation.y = translate.y;
 
         let mut clip = AnimationClip::default();
         clip.add_curve_to_target(
             target.id,
             AnimatableCurve::new(
                 animated_field!(Transform::translation),
-                EasingCurve::new(transform.translation, translation, EaseFunction::CubicOut)
-                    .reparametrize_linear(interval(0., 0.5).unwrap())
-                    .unwrap(),
+                EasingCurve::new(
+                    transform.translation,
+                    new_translation,
+                    EaseFunction::CubicOut,
+                )
+                .reparametrize_linear(interval(0., 0.5).unwrap())
+                .unwrap(),
             ),
         );
 
@@ -1183,8 +1306,7 @@ fn fit_to_transform(
         player.play(node_index);
         row_edge.0 = Some(node_index);
     } else {
-        transform.translation.x = translate.x;
-        transform.translation.y = translate.y;
+        transform.translation = new_translation;
     }
 }
 
@@ -1258,6 +1380,58 @@ fn interact_cell_generic<T>(
     }
 }
 
+trait FitBackgroundMouse {
+    const NEUTRAL: Color;
+    const HOVER: Color;
+    const CLICKED: Color;
+}
+
+struct FitBackgroundMouseInteraction<T>(T);
+
+impl<T: FitBackgroundMouse> FitBackgroundMouseInteraction<T> {
+
+}
+
+fn interact_button_hover_generic<T>(
+    target_color: Color,
+    clicked_color: Color,
+) -> impl Fn(
+    Trigger<T, FitHover>,
+    Query<&mut Sprite, With<DisplayTopButton>>,
+    Res<ButtonInput<MouseButton>>, 
+) {
+    move |ev, mut q_target, mouse| {
+        let Ok(mut sprite) = q_target.get_mut(ev.entity()) else {
+            return;
+        };
+        sprite.color = if mouse.pressed(MouseButton::Left) {
+            clicked_color
+        } else {
+            target_color
+        };
+    }
+}
+
+fn interact_button_click_generic<T>(
+    target_color: Color,
+    clicked_color: Color,
+) -> impl Fn(
+    Trigger<T, FitClicked>,
+    Query<&mut Sprite, With<DisplayTopButton>>,
+    Res<ButtonInput<MouseButton>>, 
+) {
+    move |ev, mut q_target, mouse| {
+        let Ok(mut sprite) = q_target.get_mut(ev.entity()) else {
+            return;
+        };
+        sprite.color = if mouse.pressed(MouseButton::Left) {
+            clicked_color
+        } else {
+            target_color
+        };
+    }
+}
+
 fn interact_drag_ui_move(
     _ev: Trigger<Pointer<Move>>,
     q_target: Query<&DragTarget>,
@@ -1305,11 +1479,35 @@ fn show_clues(
     }
 }
 
-fn clue_explanation_clicked(
+fn fit_clicked_down(
+    mut ev: Trigger<Pointer<Down>>,
+    q_hovered: Query<Entity, With<FitHover>>,
+    mut commands: Commands,
+) {
+    let mut trapped = false;
+    for entity in &q_hovered {
+        commands.entity(entity).insert(FitClicked);
+        trapped = true;
+    }
+    if trapped {
+        ev.propagate(false);
+    }    
+}
+
+fn fit_clear_clicked(
     ev: Trigger<Pointer<Up>>,
-    q_explanation: Query<(Entity, &ExplainClueComponent), With<FitHover>>,
+    q_clicked: Query<Entity, With<FitClicked>>,
+    mut commands: Commands,
+) {
+    for entity in &q_clicked {
+        commands.entity(entity).remove::<FitClicked>();
+    }
+}
+
+fn clue_explanation_clicked(
+    _ev: Trigger<Pointer<Up>>,
+    q_explanation: Query<(Entity, &ExplainClueComponent), With<FitClicked>>,
     mut clue_state: ResMut<NextState<ClueExplanationState>>,
-    // mut commands: Commands,
 ) {
     // info!("clicked in ?");
     let Ok((explanation, ExplainClueComponent { update, .. })) = q_explanation.get_single() else {
@@ -1320,13 +1518,16 @@ fn clue_explanation_clicked(
 }
 
 fn cell_clicked_down(
-    mut ev: Trigger<Pointer<Down>>,
+    ev: Trigger<OnInsert, FitClicked>,
     q_camera: Single<&Camera>,
     q_window: Query<&Window, With<PrimaryWindow>>,
-    q_cell: Query<(&DisplayCellButton, &GlobalTransform, &Sprite), With<FitHover>>,
+    q_cell: Query<(&DisplayCellButton, &GlobalTransform, &Sprite), With<FitClicked>>,
     // q_ui: Query<Entity, With<DragUI>>,
     mut commands: Commands,
 ) {
+    let Ok((button, &transform, sprite)) = q_cell.get(ev.entity()) else {
+        return;
+    };
     let Some(logical_viewport) = q_camera.logical_viewport_rect() else {
         return;
     };
@@ -1337,50 +1538,43 @@ fn cell_clicked_down(
         return;
     };
     let window_center = logical_viewport.center();
-    let mut dragged = false;
-    for (button, &transform, sprite) in &q_cell {
-        let translate = (cursor_loc - window_center) * Vec2::new(1., -1.);
-        commands.spawn((
-            Sprite::from_color(sprite.color.with_alpha(0.5), Vec2::new(100., 100.)),
-            Transform::from_xyz(translate.x, translate.y, 15.),
-            DragTarget::new(cursor_loc),
-            button.clone(),
-        ));
-        let mut transform = transform.compute_transform();
-        transform.translation.z += 10.;
-        commands
-            .spawn((
-                Sprite::from_color(Color::hsla(0., 0., 0.5, 0.8), Vec2::new(200., 200.)),
-                transform,
-                DragUI,
-            ))
-            .with_children(|actions_spawner| {
-                actions_spawner.spawn((
-                    Text2d::new("Clear"),
-                    Transform::from_xyz(50., 0., 1.),
-                    DragUITarget(UpdateCellIndexOperation::Clear),
-                ));
-                actions_spawner.spawn((
-                    Text2d::new("Set"),
-                    Transform::from_xyz(0., -50., 1.),
-                    DragUITarget(UpdateCellIndexOperation::Set),
-                ));
-                actions_spawner.spawn((
-                    Text2d::new("Toggle"),
-                    Transform::from_xyz(-50., 0., 1.),
-                    DragUITarget(UpdateCellIndexOperation::Toggle),
-                ));
-                actions_spawner.spawn((
-                    Text2d::new("Solo"),
-                    Transform::from_xyz(0., 50., 1.),
-                    DragUITarget(UpdateCellIndexOperation::Solo),
-                ));
-            });
-        dragged = true;
-    }
-    if dragged {
-        ev.propagate(false);
-    }
+    let translate = (cursor_loc - window_center) * Vec2::new(1., -1.);
+    commands.spawn((
+        Sprite::from_color(sprite.color.with_alpha(0.5), Vec2::new(100., 100.)),
+        Transform::from_xyz(translate.x, translate.y, 15.),
+        DragTarget::new(cursor_loc),
+        button.clone(),
+    ));
+    let mut transform = transform.compute_transform();
+    transform.translation.z += 10.;
+    commands
+        .spawn((
+            Sprite::from_color(Color::hsla(0., 0., 0.5, 0.8), Vec2::new(200., 200.)),
+            transform,
+            DragUI,
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Text2d::new("Clear"),
+                Transform::from_xyz(50., 0., 1.),
+                DragUITarget(UpdateCellIndexOperation::Clear),
+            ));
+            parent.spawn((
+                Text2d::new("Set"),
+                Transform::from_xyz(0., -50., 1.),
+                DragUITarget(UpdateCellIndexOperation::Set),
+            ));
+            parent.spawn((
+                Text2d::new("Toggle"),
+                Transform::from_xyz(-50., 0., 1.),
+                DragUITarget(UpdateCellIndexOperation::Toggle),
+            ));
+            parent.spawn((
+                Text2d::new("Solo"),
+                Transform::from_xyz(0., 50., 1.),
+                DragUITarget(UpdateCellIndexOperation::Solo),
+            ));
+        });
 }
 
 fn cell_continue_drag(
@@ -1504,6 +1698,9 @@ impl AnimatableProperty for ButtonOpacityAnimation {
 }
 
 const DEFAULT_BORDER_COLOR: Color = Color::hsla(33., 1., 0.32, 1.);
+const DEFAULT_BUTTON_BORDER_COLOR: Color = Color::hsla(33., 1., 0.32, 1.);
+const HOVER_BUTTON_BORDER_COLOR: Color = Color::hsla(33., 1., 0.6, 1.);
+const CLICKED_BUTTON_BORDER_COLOR: Color = Color::hsla(0., 0., 0.6, 1.);
 const DEFAULT_CELL_BORDER_COLOR: Color = Color::hsla(33., 1., 0.26, 1.);
 // const DEFAULT_CELL_BORDER_COLOR: Color = Color::hsla(0., 0., 0.8, 1.);
 const INVALID_CELL_BORDER_COLOR: Color = Color::hsla(0., 1., 0.5, 1.);
@@ -1620,11 +1817,15 @@ fn make_fit_background_sprite(
     let Ok((background, mut transform)) = q_target.get_mut(ev.entity()) else {
         return;
     };
-    transform.translation.z -= 5.;
+    // transform.translation.z -= 5.;
     // info!("transform: {transform:?}");
     commands.entity(ev.entity()).insert((
         borders.make_sprite(background.index, background.color),
-        NO_PICK,
+        PickingBehavior {
+            should_block_lower: background.interactable,
+            is_hoverable: background.interactable,
+        },
+        // NO_PICK,
     ));
 }
 
@@ -1666,18 +1867,25 @@ fn setup(
 
     commands
         .spawn((DisplayPuzzle, FitWithinBundle::new()))
-        .with_children(|puzzle| {
-            puzzle.spawn((
+        .with_children(|parent| {
+            parent.spawn((
                 DisplayMatrix,
                 FitWithinBundle::new(),
-                FitWithinBackground::new_colored(19, DEFAULT_BORDER_COLOR),
+                FitWithinBackground::new(19).colored(DEFAULT_BORDER_COLOR),
                 AnimationPlayer::default(),
                 AnimationGraphHandle(animation_graphs.add(AnimationGraph::new())),
             ));
-            puzzle.spawn((
+            parent.spawn((
                 DisplayCluebox,
                 FitWithinBundle::new(),
-                FitWithinBackground::new_colored(24, DEFAULT_BORDER_COLOR),
+                FitWithinBackground::new(24).colored(DEFAULT_BORDER_COLOR),
+                AnimationPlayer::default(),
+                AnimationGraphHandle(animation_graphs.add(AnimationGraph::new())),
+            ));
+            parent.spawn((
+                DisplayButtonbox,
+                FitWithinBundle::new(),
+                FitWithinBackground::new(20).colored(DEFAULT_BORDER_COLOR),
                 AnimationPlayer::default(),
                 AnimationGraphHandle(animation_graphs.add(AnimationGraph::new())),
             ));
