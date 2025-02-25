@@ -291,7 +291,7 @@ impl PuzzleRow {
     }
 }
 
-#[derive(Debug, Component, Default, Reflect)]
+#[derive(Debug, Clone, Component, Default, Reflect)]
 pub struct Puzzle {
     pub rows: Vec<PuzzleRow>,
     pub max_column: usize,

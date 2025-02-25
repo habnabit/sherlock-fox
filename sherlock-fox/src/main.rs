@@ -6,6 +6,7 @@
 
 mod clues;
 mod puzzle;
+mod undo;
 
 use std::{any::TypeId, time::Duration};
 
@@ -32,6 +33,7 @@ use puzzle::{
 };
 use rand::{distr::Distribution, seq::SliceRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use undo::{add_undo_state, Action, PushNewAction, UndoTree, UndoTreeLocation};
 use uuid::Uuid;
 
 const NO_PICK: PickingBehavior = PickingBehavior {
@@ -45,13 +47,16 @@ fn main() {
         .init_resource::<Assets<DynPuzzleClue>>()
         .init_resource::<SeededRng>()
         .init_state::<ClueExplanationState>()
-        // .add_plugins(WorldInspectorPlugin::new())
+        .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddClue>()
         .add_event::<AddRow>()
+        .add_event::<PushNewAction>()
         .add_event::<UpdateCellDisplay>()
         .add_event::<UpdateCellIndex>()
         .register_asset_reflect::<DynPuzzleClue>()
         .register_type::<AssignRandomColor>()
+        .register_type::<Action>()
+        .register_type::<PushNewAction>()
         .register_type::<CellLoc>()
         .register_type::<CellLocIndex>()
         .register_type::<DisplayCell>()
@@ -76,6 +81,12 @@ fn main() {
         .register_type::<FitTransformEdge>()
         .register_type::<SameColumnClue>()
         .register_type::<SeededRng>()
+        .register_type::<FitWithinBackground>()
+        .register_type::<UndoTree>()
+        .register_type::<UndoTreeLocation>()
+        .register_type::<ExplainClueComponent>()
+        .register_type::<ExplanationBounceEdge>()
+        .register_type::<ExplanationHilight>()
         .register_type::<UpdateCellIndexOperation>()
         .add_observer(cell_clicked_down)
         .add_observer(cell_continue_drag)
@@ -117,6 +128,7 @@ fn main() {
                 (cell_update, cell_update_display).chain(),
                 (spawn_row, add_row).chain(),
                 add_clue,
+                add_undo_state,
             ),
         )
         .add_systems(OnEnter(ClueExplanationState::Shown), show_clue_explanation)
@@ -656,13 +668,14 @@ impl DragTarget {
 }
 
 fn spawn_row(
-    mut new_row_writer: EventWriter<AddRow>,
-    mut new_clue_writer: EventWriter<AddClue>,
+    mut commands: Commands,
+    mut new_row_tx: EventWriter<AddRow>,
+    mut new_clue_tx: EventWriter<AddClue>,
     time: Res<Time>,
     mut config: ResMut<PuzzleSpawn>,
     puzzle: Single<&Puzzle>,
     mut rng: ResMut<SeededRng>,
-    mut update_cell_writer: EventWriter<UpdateCellIndex>,
+    mut update_cell_tx: EventWriter<UpdateCellIndex>,
     mut clue_assets: ResMut<Assets<DynPuzzleClue>>,
     asset_server: Res<AssetServer>,
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
@@ -692,15 +705,20 @@ fn spawn_row(
                 atlas_len,
                 tileset.shuffle,
             );
-            new_row_writer.send(AddRow { row });
+            new_row_tx.send(AddRow { row });
         } else if config.show_clues > 0 {
             config.show_clues -= 1;
             if config.show_clues == 0 {
+                let mut tree = petgraph::Graph::new();
+                let root = tree.add_node((*puzzle).clone());
+                commands.spawn(UndoTree { tree, root });
+                commands.spawn(UndoTreeLocation { current: root });
+
                 let row_nr = rng.0.random_range(0..puzzle.rows.len());
                 let cell_nr = rng.0.random_range(0..puzzle.max_column) as isize;
                 let loc = CellLoc { row_nr, cell_nr };
                 let index = puzzle.cell_answer_index(loc);
-                update_cell_writer.send(UpdateCellIndex {
+                update_cell_tx.send(UpdateCellIndex {
                     index: CellLocIndex { loc, index },
                     op: UpdateCellIndexOperation::Solo,
                     explanation: None,
@@ -717,7 +735,7 @@ fn spawn_row(
             }) else {
                 return;
             };
-            new_clue_writer.send(AddClue { clue });
+            new_clue_tx.send(AddClue { clue });
         }
     }
 }
@@ -1288,12 +1306,12 @@ fn show_clues(
 }
 
 fn clue_explanation_clicked(
-    mut ev: Trigger<Pointer<Up>>,
+    ev: Trigger<Pointer<Up>>,
     q_explanation: Query<(Entity, &ExplainClueComponent), With<FitHover>>,
     mut clue_state: ResMut<NextState<ClueExplanationState>>,
     // mut commands: Commands,
 ) {
-    info!("clicked in ?");
+    // info!("clicked in ?");
     let Ok((explanation, ExplainClueComponent { update, .. })) = q_explanation.get_single() else {
         return;
     };
@@ -1425,19 +1443,32 @@ fn cell_release_drag(
 
 fn cell_update(
     mut puzzle: Single<&mut Puzzle>,
-    mut reader: EventReader<UpdateCellIndex>,
-    mut writer: EventWriter<UpdateCellDisplay>,
+    mut update_cell_rx: EventReader<UpdateCellIndex>,
+    mut update_display_tx: EventWriter<UpdateCellDisplay>,
+    mut undo_tx: EventWriter<PushNewAction>,
 ) {
-    let mut to_update = HashSet::new();
-    for &UpdateCellIndex { index, op, .. } in reader.read() {
+    let mut all_to_update = HashSet::new();
+    for update @ &UpdateCellIndex { index, op, .. } in update_cell_rx.read() {
         let puzzle_cell = puzzle.cell_selection_mut(index.loc);
-        if puzzle_cell.apply(index.index, op) > 0 {
-            to_update.insert(index.loc);
+        let update_count = puzzle_cell.apply(index.index, op);
+        if update_count == 0 {
+            continue;
         }
+        let mut to_update = HashSet::new();
+        to_update.insert(index.loc);
+        let inferred_count = puzzle.run_inference(&mut to_update);
+        undo_tx.send(PushNewAction {
+            new_state: puzzle.clone(),
+            action: Action {
+                update: update.clone(),
+                update_count,
+                inferred_count,
+            },
+        });
+        all_to_update.extend(to_update);
     }
-    puzzle.run_inference(&mut to_update);
-    for loc in to_update {
-        writer.send(UpdateCellDisplay { loc });
+    for loc in all_to_update {
+        update_display_tx.send(UpdateCellDisplay { loc });
     }
 }
 
