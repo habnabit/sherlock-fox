@@ -28,8 +28,8 @@ use clues::{
     DynPuzzleClue, PuzzleClues, SameColumnClue,
 };
 use fit::{
-    FitClicked, FitHover, FitManip, FitTransformAnimationBundle, FitTransformEdge, FitWithin,
-    FitWithinBackground, FitWithinBundle,
+    FitClicked, FitHover, FitManip, FitMouse, FitTransformAnimationBundle, FitTransformEdge,
+    FitWithin, FitWithinBackground, FitWithinBundle,
 };
 use petgraph::graph::NodeIndex;
 use puzzle::{
@@ -50,14 +50,14 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(fit::FitPlugin)
+        .add_plugins(fit::FitMouseInteractionPlugin::<DisplayTopButton>::default())
         .add_plugins(undo::UndoPlugin)
         .init_resource::<Assets<DynPuzzleClue>>()
         .init_resource::<SeededRng>()
         .init_state::<ClueExplanationState>()
-        .add_plugins(WorldInspectorPlugin::new())
+        // .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddClue>()
         .add_event::<AddRow>()
-        .add_event::<FitClickedEvent<TopButtonAction>>()
         .add_event::<PushNewAction>()
         .add_event::<UpdateCellDisplay>()
         .add_event::<UpdateCellIndex>()
@@ -101,10 +101,6 @@ fn main() {
         .add_observer(cell_clicked_down)
         .add_observer(cell_continue_drag)
         .add_observer(clue_explanation_clicked)
-        .add_observer(FitBackgroundMouseInteraction::<DisplayTopButton>::interact_click_down)
-        .add_observer(FitBackgroundMouseInteraction::<DisplayTopButton>::interact_click_up)
-        .add_observer(FitBackgroundMouseInteraction::<DisplayTopButton>::interact_hover_in)
-        .add_observer(FitBackgroundMouseInteraction::<DisplayTopButton>::interact_hover_out)
         .add_observer(interact_cell_generic::<OnAdd>(1.25))
         .add_observer(interact_cell_generic::<OnRemove>(1.0))
         .add_observer(interact_drag_ui_move)
@@ -924,77 +920,7 @@ fn interact_cell_generic<T>(
     }
 }
 
-trait FitBackgroundMouse {
-    const NEUTRAL: Color;
-    const HOVER: Color;
-    const CLICKED: Color;
-
-    type OnClick: Send + Sync + Clone + std::fmt::Debug + 'static;
-    fn clicked(&self) -> Self::OnClick;
-}
-
-struct FitBackgroundMouseInteraction<T>(T);
-
-#[derive(Debug, Reflect, Event)]
-struct FitClickedEvent<T>(T);
-
-impl<T: FitBackgroundMouse + Component> FitBackgroundMouseInteraction<T> {
-    fn interact_hover_in(
-        ev: Trigger<OnAdd, FitHover>,
-        mut q_target: Query<(&mut Sprite, Option<&FitClicked>), With<DisplayTopButton>>,
-        mouse: Res<ButtonInput<MouseButton>>,
-    ) {
-        let Ok((mut sprite, clicked)) = q_target.get_mut(ev.entity()) else {
-            return;
-        };
-        sprite.color = if clicked.is_some() {
-            T::CLICKED
-        } else if mouse.pressed(MouseButton::Left) {
-            T::NEUTRAL
-        } else {
-            T::HOVER
-        };
-    }
-
-    fn interact_hover_out(
-        ev: Trigger<OnRemove, FitHover>,
-        mut q_target: Query<&mut Sprite, With<DisplayTopButton>>,
-    ) {
-        let Ok(mut sprite) = q_target.get_mut(ev.entity()) else {
-            return;
-        };
-        sprite.color = T::NEUTRAL;
-    }
-
-    fn interact_click_down(
-        ev: Trigger<OnAdd, FitClicked>,
-        mut q_target: Query<&mut Sprite, With<DisplayTopButton>>,
-    ) {
-        let Ok(mut sprite) = q_target.get_mut(ev.entity()) else {
-            return;
-        };
-        sprite.color = T::CLICKED;
-    }
-
-    fn interact_click_up(
-        ev: Trigger<OnRemove, FitClicked>,
-        mut q_target: Query<(&mut Sprite, Option<&FitHover>, &T), With<DisplayTopButton>>,
-        mut ev_tx: EventWriter<FitClickedEvent<T::OnClick>>,
-    ) {
-        let Ok((mut sprite, hover, data)) = q_target.get_mut(ev.entity()) else {
-            return;
-        };
-        info!("click up, hover: {:?}", hover);
-        sprite.color = if hover.is_some() {
-            ev_tx.send(FitClickedEvent(data.clicked()));
-            T::HOVER
-        } else {
-            T::NEUTRAL
-        };
-    }
-}
-
-impl FitBackgroundMouse for DisplayTopButton {
+impl FitMouse for DisplayTopButton {
     const HOVER: Color = HOVER_BUTTON_BORDER_COLOR;
     const CLICKED: Color = CLICKED_BUTTON_BORDER_COLOR;
     const NEUTRAL: Color = DEFAULT_BUTTON_BORDER_COLOR;

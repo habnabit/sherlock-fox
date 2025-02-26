@@ -6,8 +6,9 @@ use bevy::prelude::*;
 use petgraph::{graph::NodeIndex, visit::EdgeRef, Direction, Graph};
 
 use crate::{
+    fit::FitClickedEvent,
     puzzle::{CellLoc, Puzzle},
-    FitClickedEvent, TopButtonAction, UpdateCellDisplay, UpdateCellIndex,
+    TopButtonAction, UpdateCellDisplay, UpdateCellIndex,
 };
 
 #[derive(Debug, Event, Reflect)]

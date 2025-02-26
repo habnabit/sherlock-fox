@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: EUPL-1.2
 
+use std::marker::PhantomData;
+
 use bevy::{
     animation::{animated_field, AnimationTarget, AnimationTargetId},
     input::common_conditions::input_just_released,
@@ -521,6 +523,93 @@ fn fit_clear_clicked(q_clicked: Query<Entity, With<FitClicked>>, mut commands: C
     for entity in &q_clicked {
         info!("clearing click on {entity:?}");
         commands.entity(entity).remove::<FitClicked>();
+    }
+}
+
+pub trait FitMouse {
+    const NEUTRAL: Color;
+    const HOVER: Color;
+    const CLICKED: Color;
+
+    type OnClick: Send + Sync + Clone + std::fmt::Debug + 'static;
+    fn clicked(&self) -> Self::OnClick;
+}
+
+#[derive(Debug)]
+pub struct FitMouseInteractionPlugin<T>(PhantomData<fn() -> T>);
+
+impl<T> Default for FitMouseInteractionPlugin<T> {
+    fn default() -> Self {
+        Self(Default::default())
+    }
+}
+
+#[derive(Debug, Reflect, Event)]
+pub struct FitClickedEvent<D>(pub D);
+
+impl<C: FitMouse + Component> FitMouseInteractionPlugin<C> {
+    fn interact_hover_in(
+        ev: Trigger<OnAdd, FitHover>,
+        mut q_target: Query<(&mut Sprite, Option<&FitClicked>), With<C>>,
+        mouse: Res<ButtonInput<MouseButton>>,
+    ) {
+        let Ok((mut sprite, clicked)) = q_target.get_mut(ev.entity()) else {
+            return;
+        };
+        sprite.color = if clicked.is_some() {
+            C::CLICKED
+        } else if mouse.pressed(MouseButton::Left) {
+            C::NEUTRAL
+        } else {
+            C::HOVER
+        };
+    }
+
+    fn interact_hover_out(
+        ev: Trigger<OnRemove, FitHover>,
+        mut q_target: Query<&mut Sprite, With<C>>,
+    ) {
+        let Ok(mut sprite) = q_target.get_mut(ev.entity()) else {
+            return;
+        };
+        sprite.color = C::NEUTRAL;
+    }
+
+    fn interact_click_down(
+        ev: Trigger<OnAdd, FitClicked>,
+        mut q_target: Query<&mut Sprite, With<C>>,
+    ) {
+        let Ok(mut sprite) = q_target.get_mut(ev.entity()) else {
+            return;
+        };
+        sprite.color = C::CLICKED;
+    }
+
+    fn interact_click_up(
+        ev: Trigger<OnRemove, FitClicked>,
+        mut q_target: Query<(&mut Sprite, Option<&FitHover>, &C)>,
+        mut ev_tx: EventWriter<FitClickedEvent<C::OnClick>>,
+    ) {
+        let Ok((mut sprite, hover, data)) = q_target.get_mut(ev.entity()) else {
+            return;
+        };
+        info!("click up, hover: {:?}", hover);
+        sprite.color = if hover.is_some() {
+            ev_tx.send(FitClickedEvent(data.clicked()));
+            C::HOVER
+        } else {
+            C::NEUTRAL
+        };
+    }
+}
+
+impl<C: FitMouse + Component> Plugin for FitMouseInteractionPlugin<C> {
+    fn build(&self, app: &mut App) {
+        app.add_event::<FitClickedEvent<C::OnClick>>()
+            .add_observer(Self::interact_click_down)
+            .add_observer(Self::interact_click_up)
+            .add_observer(Self::interact_hover_in)
+            .add_observer(Self::interact_hover_out);
     }
 }
 
