@@ -5,6 +5,7 @@
 #![feature(try_blocks, cmp_minmax)]
 
 mod clues;
+mod fit;
 mod puzzle;
 mod undo;
 
@@ -25,6 +26,12 @@ use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use clues::{
     AdjacentColumnClue, BetweenColumnsClue, ClueExplanation, ClueExplanationResolvedChunk,
     DynPuzzleClue, PuzzleClues, SameColumnClue,
+};
+use fit::{
+    fit_background_sprite, fit_inside_buttonbox, fit_inside_cell, fit_inside_clues,
+    fit_inside_matrix, fit_inside_puzzle, fit_inside_row, fit_inside_window, fit_to_transform,
+    make_fit_background_sprite, mouse_out_fit, mouse_over_fit, FitClicked, FitHover, FitManip,
+    FitTransformAnimationBundle, FitTransformEdge, FitWithin, FitWithinBackground, FitWithinBundle,
 };
 use petgraph::graph::NodeIndex;
 use puzzle::{
@@ -419,80 +426,6 @@ fn show_dyn_clue(
         .with_children(clue.spawn_into(puzzle));
 }
 
-#[derive(Reflect, Debug, Clone, Component, Default)]
-struct FitWithin {
-    rect: Rect,
-}
-
-impl FitWithin {
-    fn new(rect: Rect) -> Self {
-        FitWithin { rect }
-    }
-
-    fn refresh_rect(&self, commands: &mut Commands, me: Entity) {
-        // info!("refresh_rect: me={me:?} >{:?}", self.rect);
-        commands.entity(me).insert(FitWithin { rect: self.rect });
-    }
-
-    fn set_rect(&self, commands: &mut Commands, me: Entity, new_rect: Rect) {
-        if self.rect != new_rect {
-            // info!("set_rect: me={me:?} {:?} -> {:?}", self.rect, new_rect);
-            commands.entity(me).insert(FitWithin { rect: new_rect });
-        }
-    }
-}
-
-#[derive(Reflect, Debug, Component)]
-struct FitHover;
-
-#[derive(Reflect, Debug, Component)]
-struct FitClicked;
-
-#[derive(Bundle)]
-struct FitWithinBundle {
-    fit: FitWithin,
-    transform: Transform,
-    visibility: InheritedVisibility,
-}
-
-impl FitWithinBundle {
-    fn new() -> Self {
-        FitWithinBundle {
-            fit: FitWithin::default(),
-            transform: Transform::default(),
-            visibility: InheritedVisibility::VISIBLE,
-        }
-    }
-}
-
-#[derive(Reflect, Debug, Component, Default)]
-struct FitWithinBackground {
-    index: usize,
-    color: Color,
-    interactable: bool,
-}
-
-impl FitWithinBackground {
-    fn new(index: usize) -> Self {
-        FitWithinBackground {
-            index,
-            color: Color::hsla(0., 0., 1., 1.),
-            interactable: false,
-        }
-    }
-
-    fn colored(self, color: Color) -> Self {
-        FitWithinBackground { color, ..self }
-    }
-
-    fn with_interaction(self, interactable: bool) -> Self {
-        FitWithinBackground {
-            interactable,
-            ..self
-        }
-    }
-}
-
 #[derive(Bundle)]
 struct HoverAnimationBundle {
     target: AnimationTarget,
@@ -522,34 +455,10 @@ impl Default for HoverAnimationBundle {
 }
 
 #[derive(Bundle)]
-struct FitTransformAnimationBundle {
-    target: AnimationTarget,
-    translation_tracker: FitTransformEdge,
-}
-
-impl FitTransformAnimationBundle {
-    fn new(player: Entity) -> Self {
-        FitTransformAnimationBundle {
-            target: AnimationTarget {
-                id: AnimationTargetId(Uuid::new_v4()),
-                player,
-            },
-            translation_tracker: Default::default(),
-        }
-    }
-}
-
-impl Default for FitTransformAnimationBundle {
-    fn default() -> Self {
-        FitTransformAnimationBundle::new(Entity::PLACEHOLDER)
-    }
-}
-
-#[derive(Bundle)]
 struct ExplanationBounceAnimationBundle {
     target: AnimationTarget,
     scale_tracker: ExplanationBounceEdge,
-    translation_tracker: FitTransformEdge,
+    translation_tracker: fit::FitTransformEdge,
 }
 
 impl ExplanationBounceAnimationBundle {
@@ -637,9 +546,6 @@ struct HoverScaleEdge(Option<NodeIndex>);
 
 #[derive(Reflect, Debug, Component, Clone, Default)]
 struct HoverAlphaEdge(Option<NodeIndex>);
-
-#[derive(Reflect, Debug, Component, Clone, Default)]
-struct FitTransformEdge(Option<NodeIndex>);
 
 #[derive(Reflect, Debug, Component, Clone, Default)]
 struct ExplanationBounceEdge(Option<NodeIndex>);
@@ -895,80 +801,84 @@ fn add_row(
     mut commands: Commands,
     mut reader: EventReader<AddRow>,
     mut puzzle: Single<&mut Puzzle>,
-    matrix_entity: Single<(Entity, &FitWithin), With<DisplayMatrix>>,
+    q_matrix: Query<(Entity, &FitWithin), With<DisplayMatrix>>,
     mut animation_graphs: ResMut<Assets<AnimationGraph>>,
 ) {
-    let (matrix, matrix_fit) = *matrix_entity;
+    let Ok(matrix_e_fit) = q_matrix.get_single() else {
+        return;
+    };
     let mut spawned = false;
     for ev in reader.read() {
         let row_nr = puzzle.rows.len();
         puzzle.add_row(ev.row.clone());
         let puzzle_row = &puzzle.rows[row_nr];
 
-        commands.entity(matrix).with_children(|matrix_spawner| {
-            matrix_spawner
-                .spawn((
-                    FitWithinBundle::new(),
-                    // RandomColorSprite::new(),
-                    DisplayRow { row_nr },
-                    FitTransformAnimationBundle::new(matrix),
-                ))
-                .with_children(|row_spawner| {
-                    for cell_nr in 0..puzzle_row.len() as isize {
-                        let loc = CellLoc { row_nr, cell_nr };
-                        let graph = AnimationGraph::new();
-                        let cell_player = row_spawner
-                            .spawn((
-                                AnimationPlayer::default(),
-                                AnimationGraphHandle(animation_graphs.add(graph)),
-                            ))
-                            .id();
-                        row_spawner
-                            .spawn((
-                                FitWithinBundle::new(),
-                                FitWithinBackground::new(6).colored(DEFAULT_CELL_BORDER_COLOR),
-                                // RandomColorSprite::new(),
-                                DisplayCell { loc },
-                            ))
-                            .with_children(|cell_spawner| {
-                                let button_size = Vec2::new(32., 32.);
-                                for index in 0..puzzle_row.len() {
-                                    let mut sprite = puzzle_row.display_sprite(index);
-                                    sprite.custom_size = Some(button_size - Vec2::new(5., 5.));
-                                    sprite.color = Color::hsla(0., 0., 1., 1.);
-                                    cell_spawner
-                                        .spawn((
-                                            Sprite::from_color(
-                                                puzzle_row.display_color(index),
-                                                button_size,
-                                            ),
-                                            FitWithinBundle::new(),
-                                            DisplayCellButton {
-                                                index: CellLocIndex { loc, index },
-                                            },
-                                            HoverAnimationBundle::new(cell_player),
-                                        ))
-                                        .with_child((
-                                            sprite,
-                                            Transform::from_xyz(0., 0., 1.),
-                                            NO_PICK,
-                                            DisplayCellButton {
-                                                index: CellLocIndex { loc, index },
-                                            },
-                                            HoverAnimationBundle::new(cell_player),
-                                            // AssignRandomColor,
-                                        ));
-                                }
-                            });
-                    }
-                });
-        });
+        commands
+            .entity(matrix_e_fit.0)
+            .with_children(|matrix_spawner| {
+                matrix_spawner
+                    .spawn((
+                        FitWithinBundle::new(),
+                        // RandomColorSprite::new(),
+                        DisplayRow { row_nr },
+                        FitTransformAnimationBundle::new(matrix_e_fit.0),
+                    ))
+                    .with_children(|row_spawner| {
+                        for cell_nr in 0..puzzle_row.len() as isize {
+                            let loc = CellLoc { row_nr, cell_nr };
+                            let graph = AnimationGraph::new();
+                            let cell_player = row_spawner
+                                .spawn((
+                                    AnimationPlayer::default(),
+                                    AnimationGraphHandle(animation_graphs.add(graph)),
+                                ))
+                                .id();
+                            row_spawner
+                                .spawn((
+                                    FitWithinBundle::new(),
+                                    FitWithinBackground::new(6).colored(DEFAULT_CELL_BORDER_COLOR),
+                                    // RandomColorSprite::new(),
+                                    DisplayCell { loc },
+                                ))
+                                .with_children(|cell_spawner| {
+                                    let button_size = Vec2::new(32., 32.);
+                                    for index in 0..puzzle_row.len() {
+                                        let mut sprite = puzzle_row.display_sprite(index);
+                                        sprite.custom_size = Some(button_size - Vec2::new(5., 5.));
+                                        sprite.color = Color::hsla(0., 0., 1., 1.);
+                                        cell_spawner
+                                            .spawn((
+                                                Sprite::from_color(
+                                                    puzzle_row.display_color(index),
+                                                    button_size,
+                                                ),
+                                                FitWithinBundle::new(),
+                                                DisplayCellButton {
+                                                    index: CellLocIndex { loc, index },
+                                                },
+                                                HoverAnimationBundle::new(cell_player),
+                                            ))
+                                            .with_child((
+                                                sprite,
+                                                Transform::from_xyz(0., 0., 1.),
+                                                NO_PICK,
+                                                DisplayCellButton {
+                                                    index: CellLocIndex { loc, index },
+                                                },
+                                                HoverAnimationBundle::new(cell_player),
+                                                // AssignRandomColor,
+                                            ));
+                                    }
+                                });
+                        }
+                    });
+            });
 
         spawned = true;
     }
 
     if spawned {
-        matrix_fit.refresh_rect(&mut commands, matrix);
+        matrix_e_fit.refresh_rect(&mut commands);
     }
 }
 
@@ -979,352 +889,21 @@ fn add_clue(
     q_cluebox: Single<(Entity, &FitWithin), (With<DisplayCluebox>, With<AnimationPlayer>)>,
 ) {
     let (_puzzle, ref mut puzzle_clues) = *q_puzzle;
-    let (cluebox, cluebox_fit) = *q_cluebox;
+    let cluebox_e_fit = *q_cluebox;
     let mut updated = false;
     for AddClue { clue } in reader.read() {
         puzzle_clues.clues.push(clue.clone());
-        commands.entity(cluebox).with_child((
+        commands.entity(cluebox_e_fit.0).with_child((
             PuzzleClueComponent(clue.clone_weak()),
             FitWithinBundle::new(),
             DisplayClue,
-            ExplanationBounceAnimationBundle::new(cluebox),
+            ExplanationBounceAnimationBundle::new(cluebox_e_fit.0),
         ));
         updated = true;
     }
     if updated {
-        cluebox_fit.refresh_rect(&mut commands, cluebox);
+        cluebox_e_fit.refresh_rect(&mut commands);
     }
-}
-
-fn fit_inside_window(
-    q_camera: Query<(Entity, &Camera)>,
-    q_fit_root: Query<(Entity, &FitWithin), Without<Parent>>,
-    mut commands: Commands,
-) {
-    let (_camera_entity, camera) = q_camera.single();
-    let Some(logical_viewport) = camera.logical_viewport_rect() else {
-        return;
-    };
-    let window_size = logical_viewport.inflate(-10.);
-    // info!("ensuring window fit of window({:?}) {:?} {:?}", window_size, camera_entity, camera);
-    for (entity, fit_within) in &q_fit_root {
-        fit_within.set_rect(&mut commands, entity, window_size);
-    }
-}
-
-macro_rules! get_child {
-    ($ret:pat_param = $q:expr, $children:expr) => {
-        let q = &$q;
-        let Some($ret) = $children
-            .iter()
-            .filter_map(|e| q.get(*e).ok().map(|(entity, fit)| Child { entity, fit }))
-            .next()
-        else {
-            return;
-        };
-    };
-}
-
-fn fit_inside_puzzle(
-    ev: Trigger<OnInsert, (FitWithin, DisplayPuzzle)>,
-    q_about_target: Query<
-        (&FitWithin, &Children),
-        (
-            With<DisplayPuzzle>,
-            Without<DisplayMatrix>,
-            Without<DisplayCluebox>,
-        ),
-    >,
-    q_matrix: Query<(Entity, &FitWithin), With<DisplayMatrix>>,
-    q_clues: Query<(Entity, &FitWithin), With<DisplayCluebox>>,
-    q_buttons: Query<(Entity, &FitWithin), With<DisplayButtonbox>>,
-    mut commands: Commands,
-) {
-    // info!("testing matrix fit of {:?}", ev.entity());
-    let Ok((within, children)) = q_about_target.get(ev.entity()) else {
-        return;
-    };
-    struct Child<'f> {
-        entity: Entity,
-        fit: &'f FitWithin,
-    }
-    get_child!(matrix = q_matrix, children);
-    get_child!(clues = q_clues, children);
-    get_child!(buttons = q_buttons, children);
-    let fit = within.rect;
-    let buttonbox_width = fit.width() / 6.;
-    let buttonbox_x = fit.max.x - buttonbox_width;
-    let cluebox_height = fit.height() / 4.;
-    let cluebox_y = fit.max.y - cluebox_height;
-    let matrix_rect = Rect::new(fit.min.x, fit.min.y, buttonbox_x, cluebox_y);
-    let cluebox_rect = Rect::new(fit.min.x, cluebox_y, buttonbox_x, fit.max.y);
-    let buttonbox_rect = Rect::new(buttonbox_x, fit.min.y, fit.max.x, fit.max.y);
-    matrix
-        .fit
-        .set_rect(&mut commands, matrix.entity, matrix_rect);
-    clues
-        .fit
-        .set_rect(&mut commands, clues.entity, cluebox_rect);
-    buttons
-        .fit
-        .set_rect(&mut commands, buttons.entity, buttonbox_rect);
-}
-
-fn fit_inside_clues(
-    ev: Trigger<OnInsert, (FitWithin, DisplayCluebox)>,
-    q_about_target: Query<(&FitWithin, &Children), (With<DisplayCluebox>, Without<DisplayClue>)>,
-    q_children: Query<(Entity, &FitWithin, &DisplayClue)>,
-    mut commands: Commands,
-) {
-    let Ok((within, children)) = q_about_target.get(ev.entity()) else {
-        return;
-    };
-    let children = children
-        .iter()
-        .filter_map(|e| q_children.get(*e).ok())
-        .collect::<Vec<_>>();
-    let fit = within.rect;
-    let fit_width = fit.width();
-    let clue_width = fit_width / children.len() as f32;
-    // let clue_width = 45.;
-    let mut current_x = fit.min.x;
-    for (entity, fit_within, _) in children {
-        let new_x = current_x + clue_width;
-        let clue_rect = Rect::new(current_x, fit.min.y, new_x, fit.max.y);
-        fit_within.set_rect(&mut commands, entity, clue_rect);
-        current_x = new_x;
-    }
-}
-
-fn fit_inside_buttonbox(
-    ev: Trigger<OnInsert, (FitWithin, DisplayButtonbox)>,
-    q_about_target: Query<
-        (&FitWithin, &Children),
-        (With<DisplayButtonbox>, Without<DisplayTopButton>),
-    >,
-    q_children: Query<(Entity, &FitWithin, &DisplayTopButton)>,
-    mut commands: Commands,
-) {
-    let Ok((within, children)) = q_about_target.get(ev.entity()) else {
-        return;
-    };
-    let children = children
-        .iter()
-        .filter_map(|e| q_children.get(*e).ok())
-        .collect::<Vec<_>>();
-    let fit = within.rect.inflate(-10.);
-    // let fit_height = fit.height();
-    let row_height = 50.;
-    let mut current_y = fit.min.y;
-    for (entity, fit_within, _) in children {
-        let new_y = current_y + row_height + 20.;
-        let row_rect = Rect::new(fit.min.x, current_y, fit.max.x, new_y).inflate(-5.);
-        fit_within.set_rect(&mut commands, entity, row_rect);
-        current_y = new_y;
-    }
-}
-
-fn fit_inside_matrix(
-    ev: Trigger<OnInsert, (FitWithin, DisplayMatrix)>,
-    q_about_target: Query<(&FitWithin, &Children), (With<DisplayMatrix>, Without<DisplayRow>)>,
-    q_children: Query<(Entity, &FitWithin, &DisplayRow)>,
-    mut commands: Commands,
-) {
-    // info!("testing matrix fit of {:?}", ev.entity());
-    let Ok((within, children)) = q_about_target.get(ev.entity()) else {
-        return;
-    };
-    // info!(
-    //     " + fitting row inside matrix {:?} {:?}",
-    //     within,
-    //     children.len()
-    // );
-    let children = {
-        let mut children = children
-            .iter()
-            .filter_map(|e| q_children.get(*e).ok())
-            .collect::<Vec<_>>();
-        children.sort_by_key(|(_, _, row)| row.row_nr);
-        children
-    };
-    let fit = within.rect;
-    let fit_height = fit.height();
-    let row_height = fit_height / children.len() as f32;
-    let mut current_y = fit.max.y;
-    for (entity, fit_within, _) in children {
-        let new_y = current_y - row_height;
-        let row_rect = Rect::new(fit.min.x, current_y, fit.max.x, new_y).inflate(-5.);
-        fit_within.set_rect(&mut commands, entity, row_rect);
-        current_y = new_y;
-    }
-}
-
-fn fit_inside_row(
-    ev: Trigger<OnInsert, (FitWithin, DisplayRow)>,
-    q_about_target: Query<(&FitWithin, &Children), (With<DisplayRow>, Without<DisplayCell>)>,
-    q_children: Query<(Entity, &FitWithin, &DisplayCell)>,
-    mut commands: Commands,
-) {
-    // info!("testing matrix row fit of {:?}", ev.entity());
-    let Ok((within, children)) = q_about_target.get(ev.entity()) else {
-        return;
-    };
-    // info!(
-    //     " + fitting row inside matrix {:?} {:?}",
-    //     within,
-    //     children.len()
-    // );
-    let children = {
-        let mut children = children
-            .iter()
-            .filter_map(|e| q_children.get(*e).ok())
-            .collect::<Vec<_>>();
-        children.sort_by_key(|(_, _, cell)| cell.loc);
-        children
-    };
-    let fit = within.rect;
-    let fit_width = fit.width();
-    let prospective_cell_width = fit_width / children.len() as f32;
-    let cell_spacing = prospective_cell_width * 0.15;
-    let total_cell_spacing = cell_spacing * (children.len() - 1) as f32;
-    let cell_width = (fit_width - total_cell_spacing) / children.len() as f32;
-    let mut current_x = fit.min.x;
-    for (entity, fit_within, _) in children {
-        let new_x = current_x + cell_width;
-        let cell_rect = Rect::new(current_x, fit.min.y, new_x, fit.max.y).inflate(-5.);
-        fit_within.set_rect(&mut commands, entity, cell_rect);
-        current_x = new_x + cell_spacing;
-    }
-}
-
-fn fit_inside_cell(
-    ev: Trigger<OnInsert, (FitWithin, DisplayCell)>,
-    q_about_target: Query<(&FitWithin, &Children, &DisplayCell), Without<DisplayCellButton>>,
-    q_children: Query<(Entity, &FitWithin, &DisplayCellButton)>,
-    q_puzzle: Single<&Puzzle>,
-    mut commands: Commands,
-) {
-    // info!("testing matrix cell fit of {:?}", ev.entity());
-    let Ok((within, children, display)) = q_about_target.get(ev.entity()) else {
-        return;
-    };
-    // info!(
-    //     " + fitting button inside cell {:?} {:?}",
-    //     within,
-    //     children.len()
-    // );
-    let children = {
-        let mut children = children
-            .iter()
-            .filter_map(|e| q_children.get(*e).ok())
-            .collect::<Vec<_>>();
-        children.sort_by_key(|(_, _, button)| button.index);
-        children
-    };
-    let sel = q_puzzle.cell_selection(display.loc);
-    let sel_solo = sel.is_any_solo();
-    let fit = within.rect;
-    let fit_width = fit.width();
-    let button_width = fit_width / children.len() as f32;
-    let mut current_x = fit.min.x;
-    for (entity, fit_within, button) in children {
-        let new_x = current_x + button_width;
-        // TODO: update the parent rect to lay this out
-        let button_rect = if sel_solo == Some(button.index.index) {
-            Rect::from_center_size(Vec2::default(), Vec2::new(50., 50.))
-        } else {
-            Rect::new(current_x, fit.min.y, new_x, fit.max.y)
-        };
-        fit_within.set_rect(&mut commands, entity, button_rect);
-        current_x = new_x;
-    }
-}
-
-fn fit_to_transform(
-    ev: Trigger<OnInsert, FitWithin>,
-    mut q_fit: Query<(Entity, &FitWithin, &Parent, &mut Transform)>,
-    q_just_fit: Query<&FitWithin>,
-    mut q_animation: Query<(&AnimationTarget, &mut FitTransformEdge)>,
-    mut q_reader: Query<(&mut AnimationPlayer, &AnimationGraphHandle)>,
-    mut animation_clips: ResMut<Assets<AnimationClip>>,
-    mut animation_graphs: ResMut<Assets<AnimationGraph>>,
-) {
-    let Ok((entity, fit, parent, mut transform)) = q_fit.get_mut(ev.entity()) else {
-        return;
-    };
-    let Ok(parent_fit) = q_just_fit.get(**parent) else {
-        return;
-    };
-    // info!("fit to transform before={fit:?}");
-    // TODO: unsure why this needs to be Y-reflected
-    let new_translation = Vec3::from((
-        (fit.rect.center() - parent_fit.rect.center()) * Vec2::new(1., -1.),
-        1.,
-    ));
-    let animation_info = q_animation
-        .get_mut(entity)
-        .ok()
-        .and_then(|(target, row_edge)| {
-            let (player, graph_handle) = q_reader.get_mut(target.player).ok()?;
-            let graph = animation_graphs.get_mut(graph_handle.id())?;
-            Some((target, row_edge, player, graph))
-        });
-    if let Some((target, mut row_edge, mut player, graph)) = animation_info {
-        // let mut translation = transform.translation;
-        // translation.x = translate.x;
-        // translation.y = translate.y;
-
-        let mut clip = AnimationClip::default();
-        clip.add_curve_to_target(
-            target.id,
-            AnimatableCurve::new(
-                animated_field!(Transform::translation),
-                EasingCurve::new(
-                    transform.translation,
-                    new_translation,
-                    EaseFunction::CubicOut,
-                )
-                .reparametrize_linear(interval(0., 0.5).unwrap())
-                .unwrap(),
-            ),
-        );
-
-        if let Some(prev_node) = row_edge.0 {
-            graph.remove_edge(graph.root, prev_node);
-        }
-        let clip_handle = animation_clips.add(clip);
-        let node_index = graph.add_clip(clip_handle, 1., graph.root);
-        player.play(node_index);
-        row_edge.0 = Some(node_index);
-    } else {
-        transform.translation = new_translation;
-    }
-}
-
-fn fit_background_sprite(
-    ev: Trigger<OnInsert, FitWithin>,
-    mut q_fit: Query<(&FitWithin, &mut Sprite), With<FitWithinBackground>>,
-) {
-    let Ok((fit, mut sprite)) = q_fit.get_mut(ev.entity()) else {
-        return;
-    };
-    sprite.custom_size = Some(fit.rect.size());
-}
-
-fn mouse_over_fit(ev: Trigger<Pointer<Over>>, mut commands: Commands) {
-    // info!("mouse over fit {ev:?}");
-    let Some(mut cmd) = commands.get_entity(ev.target) else {
-        return;
-    };
-    cmd.insert(FitHover);
-}
-
-fn mouse_out_fit(ev: Trigger<Pointer<Out>>, mut commands: Commands) {
-    // info!("mouse out fit {ev:?}");
-    let Some(mut cmd) = commands.get_entity(ev.target) else {
-        return;
-    };
-    cmd.remove::<FitHover>();
 }
 
 fn interact_cell_generic<T>(
@@ -1824,27 +1403,6 @@ impl UIBorders {
         sprite.image_mode = SpriteImageMode::Sliced(self.slicer.clone());
         sprite
     }
-}
-
-fn make_fit_background_sprite(
-    ev: Trigger<OnInsert, FitWithinBackground>,
-    borders: Res<UIBorders>,
-    mut q_target: Query<(&FitWithinBackground, &mut Transform)>,
-    mut commands: Commands,
-) {
-    let Ok((background, mut transform)) = q_target.get_mut(ev.entity()) else {
-        return;
-    };
-    // transform.translation.z -= 5.;
-    // info!("transform: {transform:?}");
-    commands.entity(ev.entity()).insert((
-        borders.make_sprite(background.index, background.color),
-        PickingBehavior {
-            should_block_lower: background.interactable,
-            is_hoverable: background.interactable,
-        },
-        // NO_PICK,
-    ));
 }
 
 fn setup(
