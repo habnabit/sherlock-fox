@@ -12,11 +12,11 @@ mod undo;
 
 use std::{any::TypeId, time::Duration};
 
-use animation::AnimatorPlugin;
+use animation::{AnimatorPlugin, SavedAnimationNode};
 use bevy::{
     animation::{
         animated_field, AnimationEntityMut, AnimationEvaluationError, AnimationTarget,
-        AnimationTargetId,
+        AnimationTargetId, RepeatAnimation,
     },
     color::palettes::css,
     input::common_conditions::{input_just_pressed, input_just_released},
@@ -266,113 +266,72 @@ fn hide_clue_explanation(
     }
 }
 
-// ev: Trigger<OnInsert, FitWithin>,
-// ) {
-// let Ok((entity, fit, parent, mut transform)) = q_fit.get_mut(ev.entity()) else {
-//     return;
-// };
-// let Ok(parent_fit) = q_just_fit.get(**parent) else {
-//     return;
-// };
-// // info!("fit to transform before={fit:?}");
-// // TODO: unsure why this needs to be Y-reflected
-// let translate = (fit.rect.center() - parent_fit.rect.center()) * Vec2::new(1., -1.);
+impl SavedAnimationNode for ExplanationBounceEdge {
+    type AnimatedFrom = Transform;
+
+    fn node_mut(&mut self) -> &mut Option<NodeIndex> {
+        &mut self.0
+    }
+}
 
 fn show_clue_highlight(
     ev: Trigger<OnInsert, ExplanationHilight>,
-    mut q_transform: Query<&mut Transform>,
-    mut q_animation: Query<(&AnimationTarget, &mut ExplanationBounceEdge)>,
-    mut q_reader: Query<(&mut AnimationPlayer, &AnimationGraphHandle)>,
-    mut animation_clips: ResMut<Assets<AnimationClip>>,
-    mut animation_graphs: ResMut<Assets<AnimationGraph>>,
+    q_can_animate: Query<&AnimationTarget, With<ExplanationBounceEdge>>,
+    mut commands: Commands,
 ) {
-    let Ok(mut transform) = q_transform.get_mut(ev.entity()) else {
+    let Ok(_) = q_can_animate.get(ev.entity()) else {
         return;
     };
-
-    let animation_info = q_animation
-        .get_mut(ev.entity())
-        .ok()
-        .and_then(|(target, row_edge)| {
-            let (player, graph_handle) = q_reader.get_mut(target.player).ok()?;
-            let graph = animation_graphs.get_mut(graph_handle.id())?;
-            Some((target, row_edge, player, graph))
-        });
-    let Some((target, mut row_edge, mut player, graph)) = animation_info else {
-        return;
-    };
-    // let translate = (translate, 0.).into();
     let scale = Vec3::new(1.25, 1.25, 1.);
-
-    let mut clip = AnimationClip::default();
-    clip.add_curve_to_target(
-        target.id,
-        AnimatableCurve::new(
-            animated_field!(Transform::scale),
-            EasingCurve::new(transform.scale, scale, EaseFunction::SineInOut)
-                .reparametrize_linear(interval(0., 0.5).unwrap())
-                .unwrap()
-                .ping_pong()
-                .unwrap(),
-        ),
+    AnimatorPlugin::<ExplanationBounceEdge>::start_animation_system(
+        &mut commands,
+        ev.entity(),
+        RepeatAnimation::Forever,
+        move |transform, target| {
+            let mut clip = AnimationClip::default();
+            clip.add_curve_to_target(
+                target,
+                AnimatableCurve::new(
+                    animated_field!(Transform::scale),
+                    EasingCurve::new(transform.scale, scale, EaseFunction::SineInOut)
+                        .reparametrize_linear(interval(0., 0.5).unwrap())
+                        .unwrap()
+                        .ping_pong()
+                        .unwrap(),
+                ),
+            );
+            clip
+        },
     );
-
-    if let Some(prev_node) = row_edge.0 {
-        graph.remove_edge(graph.root, prev_node);
-    }
-    let clip_handle = animation_clips.add(clip);
-    let node_index = graph.add_clip(clip_handle, 1., graph.root);
-    player.play(node_index).repeat();
-    row_edge.0 = Some(node_index);
-
-    // transform.translation.z += 10.;
 }
 
 fn remove_clue_highlight(
     ev: Trigger<OnRemove, ExplanationHilight>,
-    mut q_transform: Query<&mut Transform>,
-    mut q_animation: Query<(&AnimationTarget, &mut ExplanationBounceEdge)>,
-    mut q_reader: Query<(&mut AnimationPlayer, &AnimationGraphHandle)>,
-    mut animation_clips: ResMut<Assets<AnimationClip>>,
-    mut animation_graphs: ResMut<Assets<AnimationGraph>>,
+    q_can_animate: Query<&AnimationTarget, With<ExplanationBounceEdge>>,
+    mut commands: Commands,
 ) {
-    let Ok(mut transform) = q_transform.get_mut(ev.entity()) else {
-        return;
-    };
-
-    let animation_info = q_animation
-        .get_mut(ev.entity())
-        .ok()
-        .and_then(|(target, row_edge)| {
-            let (player, graph_handle) = q_reader.get_mut(target.player).ok()?;
-            let graph = animation_graphs.get_mut(graph_handle.id())?;
-            Some((target, row_edge, player, graph))
-        });
-    let Some((target, mut row_edge, mut player, graph)) = animation_info else {
+    let Ok(_) = q_can_animate.get(ev.entity()) else {
         return;
     };
     let scale = Vec3::new(1., 1., 1.);
-
-    let mut clip = AnimationClip::default();
-    clip.add_curve_to_target(
-        target.id,
-        AnimatableCurve::new(
-            animated_field!(Transform::scale),
-            EasingCurve::new(transform.scale, scale, EaseFunction::SineOut)
-                .reparametrize_linear(interval(0., 0.25).unwrap())
-                .unwrap(),
-        ),
+    AnimatorPlugin::<ExplanationBounceEdge>::start_animation_system(
+        &mut commands,
+        ev.entity(),
+        RepeatAnimation::Never,
+        move |transform, target| {
+            let mut clip = AnimationClip::default();
+            clip.add_curve_to_target(
+                target,
+                AnimatableCurve::new(
+                    animated_field!(Transform::scale),
+                    EasingCurve::new(transform.scale, scale, EaseFunction::SineOut)
+                        .reparametrize_linear(interval(0., 0.25).unwrap())
+                        .unwrap(),
+                ),
+            );
+            clip
+        },
     );
-
-    if let Some(prev_node) = row_edge.0 {
-        graph.remove_edge(graph.root, prev_node);
-    }
-    let clip_handle = animation_clips.add(clip);
-    let node_index = graph.add_clip(clip_handle, 1., graph.root);
-    player.play(node_index);
-    row_edge.0 = Some(node_index);
-
-    // transform.translation.z -= 10.;
 }
 
 #[derive(Debug, Component, Reflect)]
@@ -878,47 +837,44 @@ fn add_clue(
     }
 }
 
+impl SavedAnimationNode for HoverScaleEdge {
+    type AnimatedFrom = Transform;
+
+    fn node_mut(&mut self) -> &mut Option<NodeIndex> {
+        &mut self.0
+    }
+}
+
 fn interact_cell_generic<T>(
     target_scale_xy: f32,
 ) -> impl Fn(
     Trigger<T, FitHover>,
-    Query<(&Transform, &AnimationTarget, &mut HoverScaleEdge), With<DisplayCellButton>>,
-    Query<(&mut AnimationPlayer, &AnimationGraphHandle)>,
-    ResMut<Assets<AnimationClip>>,
-    ResMut<Assets<AnimationGraph>>,
+    Query<&AnimationTarget, (With<HoverScaleEdge>, With<DisplayCellButton>)>,
+    Commands,
 ) {
-    move |ev, mut q_target, mut q_player, mut animation_clips, mut animation_graphs| {
-        let Ok((transform, target, mut hover_edge)) = q_target.get_mut(ev.entity()) else {
+    let target_scale = Vec3::new(target_scale_xy, target_scale_xy, 1.0);
+    move |ev, q_can_animate, mut commands| {
+        let Ok(_) = q_can_animate.get(ev.entity()) else {
             return;
         };
-        let Ok((mut player, graph_handle)) = q_player.get_mut(target.player) else {
-            return;
-        };
-        let Some(graph) = animation_graphs.get_mut(graph_handle.id()) else {
-            return;
-        };
-
-        let mut clip = AnimationClip::default();
-        clip.add_curve_to_target(
-            target.id,
-            AnimatableCurve::new(
-                animated_field!(Transform::scale),
-                EasingCurve::new(
-                    transform.scale,
-                    Vec3::new(target_scale_xy, target_scale_xy, 1.0),
-                    EaseFunction::CubicOut,
-                )
-                .reparametrize_linear(interval(0., 0.25).unwrap())
-                .unwrap(),
-            ),
+        AnimatorPlugin::<HoverScaleEdge>::start_animation_system(
+            &mut commands,
+            ev.entity(),
+            RepeatAnimation::Never,
+            move |transform, target| {
+                let mut clip = AnimationClip::default();
+                clip.add_curve_to_target(
+                    target,
+                    AnimatableCurve::new(
+                        animated_field!(Transform::scale),
+                        EasingCurve::new(transform.scale, target_scale, EaseFunction::CubicOut)
+                            .reparametrize_linear(interval(0., 0.25).unwrap())
+                            .unwrap(),
+                    ),
+                );
+                clip
+            },
         );
-        let clip_handle = animation_clips.add(clip);
-        if let Some(prev_node) = hover_edge.0 {
-            graph.remove_edge(graph.root, prev_node);
-        }
-        let node_index = graph.add_clip(clip_handle, 1., graph.root);
-        player.play(node_index);
-        hover_edge.0 = Some(node_index);
     }
 }
 
@@ -1237,6 +1193,7 @@ fn cell_update_display(
             AnimatorPlugin::<HoverAlphaEdge>::start_animation_system(
                 &mut commands,
                 *entity,
+                RepeatAnimation::Never,
                 move |sprite, target| {
                     let mut clip = AnimationClip::default();
                     clip.add_curve_to_target(

@@ -5,7 +5,7 @@
 use std::marker::PhantomData;
 
 use bevy::{
-    animation::{AnimationTarget, AnimationTargetId},
+    animation::{AnimationTarget, AnimationTargetId, RepeatAnimation},
     prelude::*,
 };
 use petgraph::graph::NodeIndex;
@@ -35,8 +35,12 @@ type Graphs = Assets<AnimationGraph>;
 type CB<C> = Box<dyn FnOnce(Query<AnimD<C>>, Query<ReaderD>, ResMut<Clips>, ResMut<Graphs>) + Send>;
 
 impl<C: SavedAnimationNode + Component> AnimatorPlugin<C> {
-    pub fn start_animation_system<F>(commands: &mut Commands, entity: Entity, build_clip: F)
-    where
+    pub fn start_animation_system<F>(
+        commands: &mut Commands,
+        entity: Entity,
+        repeat: RepeatAnimation,
+        build_clip: F,
+    ) where
         F: FnOnce(&C::AnimatedFrom, AnimationTargetId) -> AnimationClip + Send + 'static,
     {
         let cb: CB<C> = Box::new(
@@ -59,7 +63,7 @@ impl<C: SavedAnimationNode + Component> AnimatorPlugin<C> {
                 }
                 let clip_handle = animation_clips.add(clip);
                 let node_index = graph.add_clip(clip_handle, 1., graph.root);
-                player.play(node_index);
+                player.play(node_index).set_repeat(repeat);
                 *saved.node_mut() = Some(node_index);
             },
         );

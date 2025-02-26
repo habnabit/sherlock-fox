@@ -5,7 +5,7 @@
 use std::marker::PhantomData;
 
 use bevy::{
-    animation::{animated_field, AnimationTarget, AnimationTargetId},
+    animation::{animated_field, AnimationTarget, AnimationTargetId, RepeatAnimation},
     input::common_conditions::input_just_released,
     prelude::*,
     window::PrimaryWindow,
@@ -428,6 +428,7 @@ fn fit_to_transform(
         AnimatorPlugin::<FitTransformEdge>::start_animation_system(
             &mut commands,
             entity,
+            RepeatAnimation::Never,
             move |transform, target| {
                 let mut clip = AnimationClip::default();
                 clip.add_curve_to_target(
