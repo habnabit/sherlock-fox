@@ -522,19 +522,15 @@ fn fit_clear_clicked(q_clicked: Query<Entity, With<FitClicked>>, mut commands: C
     }
 }
 
-pub trait FitMouse {
-    const NEUTRAL: Color;
-    const HOVER: Color;
-    const CLICKED: Color;
-
+pub trait FitButton {
     type OnClick: Send + Sync + Clone + std::fmt::Debug + 'static;
     fn clicked(&self) -> Self::OnClick;
 }
 
 #[derive(Debug)]
-pub struct FitMouseInteractionPlugin<T>(PhantomData<fn() -> T>);
+pub struct FitButtonInteractionPlugin<C, K>(PhantomData<fn() -> (C, K)>);
 
-impl<T> Default for FitMouseInteractionPlugin<T> {
+impl<C, K> Default for FitButtonInteractionPlugin<C, K> {
     fn default() -> Self {
         Self(Default::default())
     }
@@ -542,9 +538,40 @@ impl<T> Default for FitMouseInteractionPlugin<T> {
 
 #[derive(Debug, Reflect, Event)]
 pub struct FitClickedEvent<D>(pub D);
+pub enum ButtonClick {}
 
-impl<C: FitMouse + Component> FitMouseInteractionPlugin<C> {
-    fn interact_hover_in(
+impl<C: FitButton + Component> FitButtonInteractionPlugin<C, ButtonClick> {
+    fn button_click_up(
+        ev: Trigger<OnRemove, FitClicked>,
+        q_target: Query<(Option<&FitHover>, &C)>,
+        mut ev_tx: EventWriter<FitClickedEvent<C::OnClick>>,
+    ) {
+        let Ok((hover, data)) = q_target.get(ev.entity()) else {
+            return;
+        };
+        if hover.is_some() {
+            ev_tx.send(FitClickedEvent(data.clicked()));
+        }
+    }
+}
+
+impl<C: FitButton + Component> Plugin for FitButtonInteractionPlugin<C, ButtonClick> {
+    fn build(&self, app: &mut App) {
+        app.add_event::<FitClickedEvent<C::OnClick>>()
+            .add_observer(Self::button_click_up);
+    }
+}
+
+pub trait FitColorBackground: FitButton {
+    const NEUTRAL: Color;
+    const HOVER: Color;
+    const CLICKED: Color;
+}
+
+pub enum ButtonColorBackground {}
+
+impl<C: FitColorBackground + Component> FitButtonInteractionPlugin<C, ButtonColorBackground> {
+    fn background_hover_in(
         ev: Trigger<OnAdd, FitHover>,
         mut q_target: Query<(&mut Sprite, Option<&FitClicked>), With<C>>,
         mouse: Res<ButtonInput<MouseButton>>,
@@ -561,7 +588,7 @@ impl<C: FitMouse + Component> FitMouseInteractionPlugin<C> {
         };
     }
 
-    fn interact_hover_out(
+    fn background_hover_out(
         ev: Trigger<OnRemove, FitHover>,
         mut q_target: Query<&mut Sprite, With<C>>,
     ) {
@@ -571,7 +598,7 @@ impl<C: FitMouse + Component> FitMouseInteractionPlugin<C> {
         sprite.color = C::NEUTRAL;
     }
 
-    fn interact_click_down(
+    fn background_click_down(
         ev: Trigger<OnAdd, FitClicked>,
         mut q_target: Query<&mut Sprite, With<C>>,
     ) {
@@ -581,17 +608,15 @@ impl<C: FitMouse + Component> FitMouseInteractionPlugin<C> {
         sprite.color = C::CLICKED;
     }
 
-    fn interact_click_up(
+    fn background_click_up(
         ev: Trigger<OnRemove, FitClicked>,
-        mut q_target: Query<(&mut Sprite, Option<&FitHover>, &C)>,
-        mut ev_tx: EventWriter<FitClickedEvent<C::OnClick>>,
+        mut q_target: Query<(&mut Sprite, Option<&FitHover>)>,
     ) {
-        let Ok((mut sprite, hover, data)) = q_target.get_mut(ev.entity()) else {
+        let Ok((mut sprite, hover)) = q_target.get_mut(ev.entity()) else {
             return;
         };
         info!("click up, hover: {:?}", hover);
         sprite.color = if hover.is_some() {
-            ev_tx.send(FitClickedEvent(data.clicked()));
             C::HOVER
         } else {
             C::NEUTRAL
@@ -599,13 +624,87 @@ impl<C: FitMouse + Component> FitMouseInteractionPlugin<C> {
     }
 }
 
-impl<C: FitMouse + Component> Plugin for FitMouseInteractionPlugin<C> {
+impl<C: FitColorBackground + Component> Plugin
+    for FitButtonInteractionPlugin<C, ButtonColorBackground>
+{
     fn build(&self, app: &mut App) {
-        app.add_event::<FitClickedEvent<C::OnClick>>()
-            .add_observer(Self::interact_click_down)
-            .add_observer(Self::interact_click_up)
-            .add_observer(Self::interact_hover_in)
-            .add_observer(Self::interact_hover_out);
+        app.add_observer(Self::background_click_down)
+            .add_observer(Self::background_click_up)
+            .add_observer(Self::background_hover_in)
+            .add_observer(Self::background_hover_out);
+    }
+}
+
+pub trait FitHoverScale: FitButton {
+    const NEUTRAL: f32;
+    const HOVER: f32;
+}
+
+pub enum ButtonScale {}
+
+#[derive(Reflect, Debug, Component, Clone, Default)]
+pub struct HoverScaleEdge(Option<NodeIndex>);
+
+impl SavedAnimationNode for HoverScaleEdge {
+    type AnimatedFrom = Transform;
+
+    fn node_mut(&mut self) -> &mut Option<NodeIndex> {
+        &mut self.0
+    }
+}
+
+impl<C: FitHoverScale + Component> FitButtonInteractionPlugin<C, ButtonScale> {
+    fn scale_hover_generic<T>(
+        target_scale_xy: f32,
+        ev: Trigger<T, FitHover>,
+        q_can_animate: Query<(), (With<AnimationTarget>, With<C>)>,
+        mut commands: Commands,
+    ) {
+        let Ok(()) = q_can_animate.get(ev.entity()) else {
+            return;
+        };
+        let target_scale = Vec3::new(target_scale_xy, target_scale_xy, 1.0);
+        AnimatorPlugin::<HoverScaleEdge>::start_animation(
+            &mut commands,
+            ev.entity(),
+            RepeatAnimation::Never,
+            move |transform, target| {
+                let mut clip = AnimationClip::default();
+                clip.add_curve_to_target(
+                    target,
+                    AnimatableCurve::new(
+                        animated_field!(Transform::scale),
+                        EasingCurve::new(transform.scale, target_scale, EaseFunction::CubicOut)
+                            .reparametrize_linear(interval(0., 0.25).unwrap())
+                            .unwrap(),
+                    ),
+                );
+                clip
+            },
+        );
+    }
+
+    fn scale_hover_in(
+        ev: Trigger<OnAdd, FitHover>,
+        q_can_animate: Query<(), (With<AnimationTarget>, With<C>)>,
+        commands: Commands,
+    ) {
+        Self::scale_hover_generic(C::HOVER, ev, q_can_animate, commands);
+    }
+
+    fn scale_hover_out(
+        ev: Trigger<OnRemove, FitHover>,
+        q_can_animate: Query<(), (With<AnimationTarget>, With<C>)>,
+        commands: Commands,
+    ) {
+        Self::scale_hover_generic(C::NEUTRAL, ev, q_can_animate, commands);
+    }
+}
+
+impl<C: FitHoverScale + Component> Plugin for FitButtonInteractionPlugin<C, ButtonScale> {
+    fn build(&self, app: &mut App) {
+        app.add_observer(Self::scale_hover_in)
+            .add_observer(Self::scale_hover_out);
     }
 }
 

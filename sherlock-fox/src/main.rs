@@ -29,8 +29,9 @@ use clues::{
     DynPuzzleClue, PuzzleClues, SameColumnClue,
 };
 use fit::{
-    FitClicked, FitClickedEvent, FitHover, FitManip, FitMouse, FitTransformAnimationBundle,
-    FitTransformEdge, FitWithin, FitWithinBackground, FitWithinBundle,
+    ButtonClick, ButtonColorBackground, ButtonScale, FitButton, FitClicked, FitClickedEvent,
+    FitColorBackground, FitHover, FitHoverScale, FitManip, FitTransformAnimationBundle,
+    FitTransformEdge, FitWithin, FitWithinBackground, FitWithinBundle, HoverScaleEdge,
 };
 use petgraph::graph::NodeIndex;
 use puzzle::{
@@ -51,7 +52,22 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(fit::FitPlugin)
-        .add_plugins(fit::FitMouseInteractionPlugin::<DisplayTopButton>::default())
+        .add_plugins(fit::FitButtonInteractionPlugin::<
+            DisplayCellButton,
+            ButtonClick,
+        >::default())
+        .add_plugins(fit::FitButtonInteractionPlugin::<
+            DisplayCellButton,
+            ButtonScale,
+        >::default())
+        .add_plugins(fit::FitButtonInteractionPlugin::<
+            DisplayTopButton,
+            ButtonClick,
+        >::default())
+        .add_plugins(fit::FitButtonInteractionPlugin::<
+            DisplayTopButton,
+            ButtonColorBackground,
+        >::default())
         .add_plugins(undo::UndoPlugin)
         .init_resource::<Assets<DynPuzzleClue>>()
         .init_resource::<SeededRng>()
@@ -103,8 +119,6 @@ fn main() {
         .add_observer(cell_continue_drag)
         .add_observer(cell_release_drag)
         .add_observer(clue_explanation_clicked)
-        .add_observer(interact_cell_generic::<OnAdd>(1.25))
-        .add_observer(interact_cell_generic::<OnRemove>(1.0))
         .add_observer(interact_drag_ui_move)
         .add_observer(remove_clue_highlight)
         .add_observer(show_clue_highlight)
@@ -472,9 +486,6 @@ enum TopButtonAction {
 }
 
 #[derive(Reflect, Debug, Component, Clone, Default)]
-struct HoverScaleEdge(Option<NodeIndex>);
-
-#[derive(Reflect, Debug, Component, Clone, Default)]
 struct HoverAlphaEdge(Option<NodeIndex>);
 
 #[derive(Reflect, Debug, Component, Clone, Default)]
@@ -836,56 +847,32 @@ fn add_clue(
     }
 }
 
-impl SavedAnimationNode for HoverScaleEdge {
-    type AnimatedFrom = Transform;
+#[derive(Debug, Clone)]
+pub struct CellClickedAction(CellLocIndex);
 
-    fn node_mut(&mut self) -> &mut Option<NodeIndex> {
-        &mut self.0
+impl FitButton for DisplayCellButton {
+    type OnClick = CellClickedAction;
+    fn clicked(&self) -> Self::OnClick {
+        CellClickedAction(self.index)
     }
 }
 
-fn interact_cell_generic<T>(
-    target_scale_xy: f32,
-) -> impl Fn(
-    Trigger<T, FitHover>,
-    Query<&AnimationTarget, (With<HoverScaleEdge>, With<DisplayCellButton>)>,
-    Commands,
-) {
-    let target_scale = Vec3::new(target_scale_xy, target_scale_xy, 1.0);
-    move |ev, q_can_animate, mut commands| {
-        let Ok(_) = q_can_animate.get(ev.entity()) else {
-            return;
-        };
-        AnimatorPlugin::<HoverScaleEdge>::start_animation(
-            &mut commands,
-            ev.entity(),
-            RepeatAnimation::Never,
-            move |transform, target| {
-                let mut clip = AnimationClip::default();
-                clip.add_curve_to_target(
-                    target,
-                    AnimatableCurve::new(
-                        animated_field!(Transform::scale),
-                        EasingCurve::new(transform.scale, target_scale, EaseFunction::CubicOut)
-                            .reparametrize_linear(interval(0., 0.25).unwrap())
-                            .unwrap(),
-                    ),
-                );
-                clip
-            },
-        );
-    }
+impl FitHoverScale for DisplayCellButton {
+    const NEUTRAL: f32 = 1.;
+    const HOVER: f32 = 1.25;
 }
 
-impl FitMouse for DisplayTopButton {
-    const HOVER: Color = HOVER_BUTTON_BORDER_COLOR;
-    const CLICKED: Color = CLICKED_BUTTON_BORDER_COLOR;
-    const NEUTRAL: Color = DEFAULT_BUTTON_BORDER_COLOR;
-
+impl FitButton for DisplayTopButton {
     type OnClick = TopButtonAction;
     fn clicked(&self) -> Self::OnClick {
         self.0
     }
+}
+
+impl FitColorBackground for DisplayTopButton {
+    const HOVER: Color = HOVER_BUTTON_BORDER_COLOR;
+    const CLICKED: Color = CLICKED_BUTTON_BORDER_COLOR;
+    const NEUTRAL: Color = DEFAULT_BUTTON_BORDER_COLOR;
 }
 
 fn interact_drag_ui_move(
