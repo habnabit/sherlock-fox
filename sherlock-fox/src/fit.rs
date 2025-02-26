@@ -425,7 +425,7 @@ fn fit_to_transform(
         1.,
     ));
     if q_can_animate.get(entity).is_ok() {
-        AnimatorPlugin::<FitTransformEdge>::start_animation_system(
+        AnimatorPlugin::<FitTransformEdge>::start_animation(
             &mut commands,
             entity,
             RepeatAnimation::Never,

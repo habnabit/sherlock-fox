@@ -56,7 +56,7 @@ fn main() {
         .init_resource::<Assets<DynPuzzleClue>>()
         .init_resource::<SeededRng>()
         .init_state::<ClueExplanationState>()
-        .add_plugins(WorldInspectorPlugin::new())
+        // .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddClue>()
         .add_event::<AddRow>()
         .add_event::<PushNewAction>()
@@ -282,7 +282,7 @@ fn show_clue_highlight(
         return;
     };
     let scale = Vec3::new(1.25, 1.25, 1.);
-    AnimatorPlugin::<ExplanationBounceEdge>::start_animation_system(
+    AnimatorPlugin::<ExplanationBounceEdge>::start_animation(
         &mut commands,
         ev.entity(),
         RepeatAnimation::Forever,
@@ -313,7 +313,7 @@ fn remove_clue_highlight(
         return;
     };
     let scale = Vec3::new(1., 1., 1.);
-    AnimatorPlugin::<ExplanationBounceEdge>::start_animation_system(
+    AnimatorPlugin::<ExplanationBounceEdge>::start_animation(
         &mut commands,
         ev.entity(),
         RepeatAnimation::Never,
@@ -856,7 +856,7 @@ fn interact_cell_generic<T>(
         let Ok(_) = q_can_animate.get(ev.entity()) else {
             return;
         };
-        AnimatorPlugin::<HoverScaleEdge>::start_animation_system(
+        AnimatorPlugin::<HoverScaleEdge>::start_animation(
             &mut commands,
             ev.entity(),
             RepeatAnimation::Never,
@@ -1208,7 +1208,7 @@ fn cell_update_display(
                 0.2
             };
 
-            AnimatorPlugin::<HoverAlphaEdge>::start_animation_system(
+            AnimatorPlugin::<HoverAlphaEdge>::start_animation(
                 &mut commands,
                 *entity,
                 RepeatAnimation::Never,
