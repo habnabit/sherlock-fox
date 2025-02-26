@@ -4,6 +4,7 @@
 
 #![feature(try_blocks, cmp_minmax)]
 
+mod animation;
 mod clues;
 mod fit;
 mod puzzle;
@@ -11,6 +12,7 @@ mod undo;
 
 use std::{any::TypeId, time::Duration};
 
+use animation::AnimatorPlugin;
 use bevy::{
     animation::{
         animated_field, AnimationEntityMut, AnimationEvaluationError, AnimationTarget,
@@ -55,7 +57,7 @@ fn main() {
         .init_resource::<Assets<DynPuzzleClue>>()
         .init_resource::<SeededRng>()
         .init_state::<ClueExplanationState>()
-        // .add_plugins(WorldInspectorPlugin::new())
+        .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddClue>()
         .add_event::<AddRow>()
         .add_event::<PushNewAction>()
@@ -1179,33 +1181,31 @@ const DEFAULT_CELL_BORDER_COLOR: Color = Color::hsla(33., 1., 0.26, 1.);
 // const DEFAULT_CELL_BORDER_COLOR: Color = Color::hsla(0., 0., 0.8, 1.);
 const INVALID_CELL_BORDER_COLOR: Color = Color::hsla(0., 1., 0.5, 1.);
 
+impl animation::SavedAnimationNode for HoverAlphaEdge {
+    type AnimatedFrom = Sprite;
+
+    fn node_mut(&mut self) -> &mut Option<NodeIndex> {
+        &mut self.0
+    }
+}
+
 fn cell_update_display(
     puzzle: Single<&Puzzle>,
     mut reader: EventReader<UpdateCellDisplay>,
     mut q_bg: Query<(&DisplayCell, &mut Sprite), Without<DisplayCellButton>>,
-    mut q_cell: Query<
-        (
-            &DisplayCellButton,
-            &mut Sprite,
-            &mut AnimationTarget,
-            &mut HoverAlphaEdge,
-        ),
-        Without<DisplayCell>,
-    >,
-    mut q_reader: Query<(&mut AnimationPlayer, &AnimationGraphHandle)>,
-    mut animation_clips: ResMut<Assets<AnimationClip>>,
-    mut animation_graphs: ResMut<Assets<AnimationGraph>>,
+    q_cell: Query<(Entity, &DisplayCellButton), Without<DisplayCell>>,
+    mut commands: Commands,
 ) {
     let mut bg_map = HashMap::new();
     for (cell, sprite) in &mut q_bg {
         bg_map.insert(cell.loc, sprite);
     }
     let mut entity_map = HashMap::<_, Vec<_>>::new();
-    for (&DisplayCellButton { index }, sprite, target, hover_edge) in &mut q_cell {
+    for (entity, &DisplayCellButton { index }) in &q_cell {
         entity_map
             .entry(index.loc)
             .or_default()
-            .push((index, sprite, target, hover_edge));
+            .push((entity, index));
     }
     for &UpdateCellDisplay { loc } in reader.read() {
         let sel = puzzle.cell_selection(loc);
@@ -1225,13 +1225,7 @@ fn cell_update_display(
             sprite.color = color;
         }
 
-        for (index, sprite, target, hover_edge) in buttons.iter_mut() {
-            let Ok((mut player, graph_handle)) = q_reader.get_mut(target.player) else {
-                continue;
-            };
-            let Some(graph) = animation_graphs.get_mut(graph_handle.id()) else {
-                continue;
-            };
+        for (entity, index) in buttons.iter() {
             let alpha = if sel.is_enabled(index.index) {
                 1.
             } else if sel_solo.is_some() {
@@ -1240,24 +1234,23 @@ fn cell_update_display(
                 0.2
             };
 
-            let mut clip = AnimationClip::default();
-            clip.add_curve_to_target(
-                target.id,
-                AnimatableCurve::new(
-                    ButtonOpacityAnimation,
-                    EasingCurve::new(sprite.color.alpha(), alpha, EaseFunction::CubicOut)
-                        .reparametrize_linear(interval(0., 0.25).unwrap())
-                        .unwrap(),
-                ),
+            AnimatorPlugin::<HoverAlphaEdge>::start_animation_system(
+                &mut commands,
+                *entity,
+                move |sprite, target| {
+                    let mut clip = AnimationClip::default();
+                    clip.add_curve_to_target(
+                        target,
+                        AnimatableCurve::new(
+                            ButtonOpacityAnimation,
+                            EasingCurve::new(sprite.color.alpha(), alpha, EaseFunction::CubicOut)
+                                .reparametrize_linear(interval(0., 0.25).unwrap())
+                                .unwrap(),
+                        ),
+                    );
+                    clip
+                },
             );
-
-            if let Some(prev_node) = hover_edge.0 {
-                graph.remove_edge(graph.root, prev_node);
-            }
-            let clip_handle = animation_clips.add(clip);
-            let node_index = graph.add_clip(clip_handle, 1., graph.root);
-            player.play(node_index);
-            hover_edge.0 = Some(node_index);
         }
     }
 }

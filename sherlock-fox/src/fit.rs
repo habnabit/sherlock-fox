@@ -14,8 +14,10 @@ use petgraph::graph::NodeIndex;
 use uuid::Uuid;
 
 use crate::{
-    puzzle::Puzzle, DisplayButtonbox, DisplayCell, DisplayCellButton, DisplayClue, DisplayCluebox,
-    DisplayMatrix, DisplayPuzzle, DisplayRow, DisplayTopButton, UIBorders,
+    animation::{AnimatorPlugin, SavedAnimationNode},
+    puzzle::Puzzle,
+    DisplayButtonbox, DisplayCell, DisplayCellButton, DisplayClue, DisplayCluebox, DisplayMatrix,
+    DisplayPuzzle, DisplayRow, DisplayTopButton, UIBorders,
 };
 
 #[derive(Reflect, Debug, Clone, Component, Default)]
@@ -395,14 +397,20 @@ fn fit_inside_cell(
     }
 }
 
+impl SavedAnimationNode for FitTransformEdge {
+    type AnimatedFrom = Transform;
+
+    fn node_mut(&mut self) -> &mut Option<NodeIndex> {
+        &mut self.0
+    }
+}
+
 fn fit_to_transform(
     ev: Trigger<OnInsert, FitWithin>,
     mut q_fit: Query<(Entity, &FitWithin, &Parent, &mut Transform)>,
     q_just_fit: Query<&FitWithin>,
-    mut q_animation: Query<(&AnimationTarget, &mut FitTransformEdge)>,
-    mut q_reader: Query<(&mut AnimationPlayer, &AnimationGraphHandle)>,
-    mut animation_clips: ResMut<Assets<AnimationClip>>,
-    mut animation_graphs: ResMut<Assets<AnimationGraph>>,
+    q_can_animate: Query<&AnimationTarget, With<FitTransformEdge>>,
+    mut commands: Commands,
 ) {
     let Ok((entity, fit, parent, mut transform)) = q_fit.get_mut(ev.entity()) else {
         return;
@@ -416,41 +424,28 @@ fn fit_to_transform(
         (fit.rect.center() - parent_fit.rect.center()) * Vec2::new(1., -1.),
         1.,
     ));
-    let animation_info = q_animation
-        .get_mut(entity)
-        .ok()
-        .and_then(|(target, row_edge)| {
-            let (player, graph_handle) = q_reader.get_mut(target.player).ok()?;
-            let graph = animation_graphs.get_mut(graph_handle.id())?;
-            Some((target, row_edge, player, graph))
-        });
-    if let Some((target, mut row_edge, mut player, graph)) = animation_info {
-        // let mut translation = transform.translation;
-        // translation.x = translate.x;
-        // translation.y = translate.y;
-
-        let mut clip = AnimationClip::default();
-        clip.add_curve_to_target(
-            target.id,
-            AnimatableCurve::new(
-                animated_field!(Transform::translation),
-                EasingCurve::new(
-                    transform.translation,
-                    new_translation,
-                    EaseFunction::CubicOut,
-                )
-                .reparametrize_linear(interval(0., 0.5).unwrap())
-                .unwrap(),
-            ),
+    if q_can_animate.get(entity).is_ok() {
+        AnimatorPlugin::<FitTransformEdge>::start_animation_system(
+            &mut commands,
+            entity,
+            move |transform, target| {
+                let mut clip = AnimationClip::default();
+                clip.add_curve_to_target(
+                    target,
+                    AnimatableCurve::new(
+                        animated_field!(Transform::translation),
+                        EasingCurve::new(
+                            transform.translation,
+                            new_translation,
+                            EaseFunction::CubicOut,
+                        )
+                        .reparametrize_linear(interval(0., 0.5).unwrap())
+                        .unwrap(),
+                    ),
+                );
+                clip
+            },
         );
-
-        if let Some(prev_node) = row_edge.0 {
-            graph.remove_edge(graph.root, prev_node);
-        }
-        let clip_handle = animation_clips.add(clip);
-        let node_index = graph.add_clip(clip_handle, 1., graph.root);
-        player.play(node_index);
-        row_edge.0 = Some(node_index);
     } else {
         transform.translation = new_translation;
     }
