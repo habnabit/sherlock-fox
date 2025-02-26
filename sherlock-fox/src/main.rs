@@ -1247,12 +1247,14 @@ fn setup(
     commands.spawn(Camera2d);
     commands.spawn((Puzzle::default(), PuzzleClues::default()));
 
-    let mut tileset_pool = TILESETS.iter().cloned().collect::<Vec<_>>();
-    tileset_pool.shuffle(&mut rng.0);
-    commands.insert_resource(PuzzleSpawn {
-        timer: Timer::new(Duration::from_secs_f32(0.05), TimerMode::Repeating),
-        show_clues: 10,
-        tileset_pool,
+    commands.insert_resource({
+        let mut tileset_pool = TILESETS.iter().cloned().collect::<Vec<_>>();
+        tileset_pool.shuffle(&mut rng.0);
+        PuzzleSpawn {
+            timer: Timer::new(Duration::from_secs_f32(0.05), TimerMode::Repeating),
+            show_clues: 10,
+            tileset_pool,
+        }
     });
 
     commands.insert_resource({
