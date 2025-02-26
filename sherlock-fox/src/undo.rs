@@ -3,9 +3,12 @@
 // SPDX-License-Identifier: EUPL-1.2
 
 use bevy::prelude::*;
-use petgraph::{graph::NodeIndex, Graph};
+use petgraph::{graph::NodeIndex, visit::EdgeRef, Direction, Graph};
 
-use crate::{puzzle::Puzzle, UpdateCellIndex};
+use crate::{
+    puzzle::{CellLoc, Puzzle},
+    FitClickedEvent, TopButtonAction, UpdateCellDisplay, UpdateCellIndex,
+};
 
 #[derive(Debug, Event, Reflect)]
 pub struct PushNewAction {
@@ -33,7 +36,7 @@ pub struct UndoTreeLocation {
 }
 
 pub fn add_undo_state(
-    mut reader: EventReader<PushNewAction>,
+    mut ev_rx: EventReader<PushNewAction>,
     mut q_tree: Query<&mut UndoTree>,
     mut q_tree_loc: Query<&mut UndoTreeLocation>,
 ) {
@@ -43,7 +46,7 @@ pub fn add_undo_state(
     let Ok(mut tree_loc) = q_tree_loc.get_single_mut() else {
         return;
     };
-    for ev in reader.read() {
+    for ev in ev_rx.read() {
         info!(
             "tree in: {tree_loc:?} nodes={} edges={}",
             tree.tree.node_count(),
@@ -58,5 +61,66 @@ pub fn add_undo_state(
             tree.tree.node_count(),
             tree.tree.edge_count()
         );
+    }
+}
+
+pub fn adjust_undo_state(
+    mut ev_rx: EventReader<FitClickedEvent<TopButtonAction>>,
+    mut q_puzzle: Query<&mut Puzzle>,
+    mut q_tree: Query<&mut UndoTree>,
+    mut q_tree_loc: Query<&mut UndoTreeLocation>,
+    mut update_display_tx: EventWriter<UpdateCellDisplay>,
+) {
+    let Ok(mut puzzle) = q_puzzle.get_single_mut() else {
+        return;
+    };
+    let Ok(mut tree) = q_tree.get_single_mut() else {
+        return;
+    };
+    let Ok(mut tree_loc) = q_tree_loc.get_single_mut() else {
+        return;
+    };
+    for &FitClickedEvent(action) in ev_rx.read() {
+        use TopButtonAction as B;
+        let new_node = match action {
+            B::Undo => {
+                let Some(undo) = tree
+                    .tree
+                    .edges_directed(tree_loc.current, Direction::Outgoing)
+                    .next()
+                else {
+                    warn!("nothing to undo");
+                    continue;
+                };
+                info!("on undo: {undo:#?}");
+                undo.target()
+            }
+            B::Redo => {
+                let redos = tree
+                    .tree
+                    .edges_directed(tree_loc.current, Direction::Incoming)
+                    .take(2)
+                    .collect::<Vec<_>>();
+                if redos.len() != 1 {
+                    warn!("couldn't redo from {redos:#?}");
+                    continue;
+                }
+                info!("on redo: {redos:#?}");
+                redos[0].source()
+            }
+            _ => continue,
+        };
+        let Some(new_state) = tree.tree.node_weight(new_node) else {
+            unreachable!()
+        };
+        tree_loc.current = new_node;
+        puzzle.clone_from(new_state);
+        for row_nr in 0..puzzle.rows.len() {
+            for cell_nr in 0..puzzle.max_column as isize {
+                update_display_tx.send(UpdateCellDisplay {
+                    loc: CellLoc { row_nr, cell_nr },
+                });
+            }
+        }
     }
 }

@@ -33,16 +33,12 @@ use puzzle::{
 };
 use rand::{distr::Distribution, seq::SliceRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use undo::{add_undo_state, Action, PushNewAction, UndoTree, UndoTreeLocation};
+use undo::{add_undo_state, adjust_undo_state, Action, PushNewAction, UndoTree, UndoTreeLocation};
 use uuid::Uuid;
 
 const NO_PICK: PickingBehavior = PickingBehavior {
     should_block_lower: false,
     is_hoverable: false,
-};
-const HOVER_PICK: PickingBehavior = PickingBehavior {
-    should_block_lower: true,
-    is_hoverable: true,
 };
 
 fn main() {
@@ -54,6 +50,7 @@ fn main() {
         .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddClue>()
         .add_event::<AddRow>()
+        .add_event::<FitClickedEvent<TopButtonAction>>()
         .add_event::<PushNewAction>()
         .add_event::<UpdateCellDisplay>()
         .add_event::<UpdateCellIndex>()
@@ -98,7 +95,6 @@ fn main() {
         .add_observer(cell_continue_drag)
         .add_observer(clue_explanation_clicked)
         .add_observer(fit_clicked_down)
-        .add_observer(fit_clear_clicked)
         .add_observer(fit_background_sprite)
         .add_observer(fit_inside_buttonbox)
         .add_observer(fit_inside_cell)
@@ -107,16 +103,10 @@ fn main() {
         .add_observer(fit_inside_puzzle)
         .add_observer(fit_inside_row)
         .add_observer(fit_to_transform)
-        // .add_observer(interact_button_click_generic::<OnAdd>(
-        // ))
-        .add_observer(interact_button_hover_generic::<OnAdd>(
-            HOVER_BUTTON_BORDER_COLOR,
-            CLICKED_BUTTON_BORDER_COLOR,
-        ))
-        .add_observer(interact_button_hover_generic::<OnRemove>(
-            DEFAULT_BUTTON_BORDER_COLOR,
-            DEFAULT_BUTTON_BORDER_COLOR,
-        ))
+        .add_observer(FitBackgroundMouseInteraction::<DisplayTopButton>::interact_click_down)
+        .add_observer(FitBackgroundMouseInteraction::<DisplayTopButton>::interact_click_up)
+        .add_observer(FitBackgroundMouseInteraction::<DisplayTopButton>::interact_hover_in)
+        .add_observer(FitBackgroundMouseInteraction::<DisplayTopButton>::interact_hover_out)
         .add_observer(interact_cell_generic::<OnAdd>(1.25))
         .add_observer(interact_cell_generic::<OnRemove>(1.0))
         .add_observer(interact_drag_ui_move)
@@ -149,6 +139,8 @@ fn main() {
                 (spawn_row, add_row).chain(),
                 add_clue,
                 add_undo_state,
+                adjust_undo_state,
+                fit_clear_clicked.run_if(input_just_released(MouseButton::Left)),
             ),
         )
         .add_systems(OnEnter(ClueExplanationState::Shown), show_clue_explanation)
@@ -723,7 +715,6 @@ fn spawn_top_buttons(ev: Trigger<OnAdd, DisplayButtonbox>, mut commands: Command
                     FitWithinBackground::new(14)
                         .colored(DEFAULT_BUTTON_BORDER_COLOR)
                         .with_interaction(true),
-                    HOVER_PICK,
                 ))
                 .with_child(Text2d::new(format!("{:?}", action)));
         }
@@ -1384,51 +1375,80 @@ trait FitBackgroundMouse {
     const NEUTRAL: Color;
     const HOVER: Color;
     const CLICKED: Color;
+
+    type OnClick: Send + Sync + Clone + std::fmt::Debug + 'static;
+    fn clicked(&self) -> Self::OnClick;
 }
 
 struct FitBackgroundMouseInteraction<T>(T);
 
-impl<T: FitBackgroundMouse> FitBackgroundMouseInteraction<T> {
+#[derive(Debug, Reflect, Event)]
+struct FitClickedEvent<T>(T);
 
-}
+impl<T: FitBackgroundMouse + Component> FitBackgroundMouseInteraction<T> {
+    fn interact_hover_in(
+        ev: Trigger<OnAdd, FitHover>,
+        mut q_target: Query<(&mut Sprite, Option<&FitClicked>), With<DisplayTopButton>>,
+        mouse: Res<ButtonInput<MouseButton>>,
+    ) {
+        let Ok((mut sprite, clicked)) = q_target.get_mut(ev.entity()) else {
+            return;
+        };
+        sprite.color = if clicked.is_some() {
+            T::CLICKED
+        } else if mouse.pressed(MouseButton::Left) {
+            T::NEUTRAL
+        } else {
+            T::HOVER
+        };
+    }
 
-fn interact_button_hover_generic<T>(
-    target_color: Color,
-    clicked_color: Color,
-) -> impl Fn(
-    Trigger<T, FitHover>,
-    Query<&mut Sprite, With<DisplayTopButton>>,
-    Res<ButtonInput<MouseButton>>, 
-) {
-    move |ev, mut q_target, mouse| {
+    fn interact_hover_out(
+        ev: Trigger<OnRemove, FitHover>,
+        mut q_target: Query<&mut Sprite, With<DisplayTopButton>>,
+    ) {
         let Ok(mut sprite) = q_target.get_mut(ev.entity()) else {
             return;
         };
-        sprite.color = if mouse.pressed(MouseButton::Left) {
-            clicked_color
+        sprite.color = T::NEUTRAL;
+    }
+
+    fn interact_click_down(
+        ev: Trigger<OnAdd, FitClicked>,
+        mut q_target: Query<&mut Sprite, With<DisplayTopButton>>,
+    ) {
+        let Ok(mut sprite) = q_target.get_mut(ev.entity()) else {
+            return;
+        };
+        sprite.color = T::CLICKED;
+    }
+
+    fn interact_click_up(
+        ev: Trigger<OnRemove, FitClicked>,
+        mut q_target: Query<(&mut Sprite, Option<&FitHover>, &T), With<DisplayTopButton>>,
+        mut ev_tx: EventWriter<FitClickedEvent<T::OnClick>>,
+    ) {
+        let Ok((mut sprite, hover, data)) = q_target.get_mut(ev.entity()) else {
+            return;
+        };
+        info!("click up, hover: {:?}", hover);
+        sprite.color = if hover.is_some() {
+            ev_tx.send(FitClickedEvent(data.clicked()));
+            T::HOVER
         } else {
-            target_color
+            T::NEUTRAL
         };
     }
 }
 
-fn interact_button_click_generic<T>(
-    target_color: Color,
-    clicked_color: Color,
-) -> impl Fn(
-    Trigger<T, FitClicked>,
-    Query<&mut Sprite, With<DisplayTopButton>>,
-    Res<ButtonInput<MouseButton>>, 
-) {
-    move |ev, mut q_target, mouse| {
-        let Ok(mut sprite) = q_target.get_mut(ev.entity()) else {
-            return;
-        };
-        sprite.color = if mouse.pressed(MouseButton::Left) {
-            clicked_color
-        } else {
-            target_color
-        };
+impl FitBackgroundMouse for DisplayTopButton {
+    const HOVER: Color = HOVER_BUTTON_BORDER_COLOR;
+    const CLICKED: Color = CLICKED_BUTTON_BORDER_COLOR;
+    const NEUTRAL: Color = DEFAULT_BUTTON_BORDER_COLOR;
+
+    type OnClick = TopButtonAction;
+    fn clicked(&self) -> Self::OnClick {
+        self.0
     }
 }
 
@@ -1491,15 +1511,13 @@ fn fit_clicked_down(
     }
     if trapped {
         ev.propagate(false);
-    }    
+    }
 }
 
-fn fit_clear_clicked(
-    ev: Trigger<Pointer<Up>>,
-    q_clicked: Query<Entity, With<FitClicked>>,
-    mut commands: Commands,
-) {
+fn fit_clear_clicked(q_clicked: Query<Entity, With<FitClicked>>, mut commands: Commands) {
+    info!("clicked up");
     for entity in &q_clicked {
+        info!("clearing click on {entity:?}");
         commands.entity(entity).remove::<FitClicked>();
     }
 }
@@ -1700,7 +1718,7 @@ impl AnimatableProperty for ButtonOpacityAnimation {
 const DEFAULT_BORDER_COLOR: Color = Color::hsla(33., 1., 0.32, 1.);
 const DEFAULT_BUTTON_BORDER_COLOR: Color = Color::hsla(33., 1., 0.32, 1.);
 const HOVER_BUTTON_BORDER_COLOR: Color = Color::hsla(33., 1., 0.6, 1.);
-const CLICKED_BUTTON_BORDER_COLOR: Color = Color::hsla(0., 0., 0.6, 1.);
+const CLICKED_BUTTON_BORDER_COLOR: Color = Color::hsla(0., 0., 0.8, 1.);
 const DEFAULT_CELL_BORDER_COLOR: Color = Color::hsla(33., 1., 0.26, 1.);
 // const DEFAULT_CELL_BORDER_COLOR: Color = Color::hsla(0., 0., 0.8, 1.);
 const INVALID_CELL_BORDER_COLOR: Color = Color::hsla(0., 1., 0.5, 1.);
