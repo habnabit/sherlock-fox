@@ -19,7 +19,6 @@ use bevy::{
         AnimationTargetId, RepeatAnimation,
     },
     color::palettes::css,
-    input::common_conditions::{input_just_pressed, input_just_released},
     prelude::*,
     utils::hashbrown::{HashMap, HashSet},
     window::PrimaryWindow,
@@ -30,8 +29,8 @@ use clues::{
     DynPuzzleClue, PuzzleClues, SameColumnClue,
 };
 use fit::{
-    FitClicked, FitHover, FitManip, FitMouse, FitTransformAnimationBundle, FitTransformEdge,
-    FitWithin, FitWithinBackground, FitWithinBundle,
+    FitClicked, FitClickedEvent, FitHover, FitManip, FitMouse, FitTransformAnimationBundle,
+    FitTransformEdge, FitWithin, FitWithinBackground, FitWithinBundle,
 };
 use petgraph::graph::NodeIndex;
 use puzzle::{
@@ -102,6 +101,7 @@ fn main() {
         .register_type::<UpdateCellIndexOperation>()
         .add_observer(cell_clicked_down)
         .add_observer(cell_continue_drag)
+        .add_observer(cell_release_drag)
         .add_observer(clue_explanation_clicked)
         .add_observer(interact_cell_generic::<OnAdd>(1.25))
         .add_observer(interact_cell_generic::<OnRemove>(1.0))
@@ -115,8 +115,7 @@ fn main() {
             Update,
             (
                 assign_random_color,
-                show_clues.run_if(input_just_pressed(KeyCode::KeyC)),
-                cell_release_drag.run_if(input_just_released(MouseButton::Left)),
+                show_clues,
                 (cell_update, cell_update_display).chain(),
                 (spawn_row, add_row).chain(),
                 add_clue,
@@ -909,12 +908,26 @@ fn interact_drag_ui_move(
 }
 
 fn show_clues(
+    mut ev_rx: EventReader<FitClickedEvent<TopButtonAction>>,
     q_clues: Single<&PuzzleClues>,
     q_puzzle: Single<&Puzzle>,
     clues: Res<Assets<DynPuzzleClue>>,
     mut commands: Commands,
     mut clue_state: ResMut<NextState<ClueExplanationState>>,
 ) {
+    let show_clue = {
+        let mut seen = false;
+        for &FitClickedEvent(action) in ev_rx.read() {
+            if let TopButtonAction::Clue = action {
+                seen = true;
+            }
+        }
+        seen
+    };
+    if !show_clue {
+        return;
+    }
+
     let puzzle = *q_puzzle;
     let mut to_enact = None;
     for clue_handle in q_clues.clues.iter() {
@@ -1047,11 +1060,16 @@ fn cell_continue_drag(
 }
 
 fn cell_release_drag(
+    ev: Trigger<OnRemove, FitClicked>,
+    q_orig: Query<Entity, (With<FitClicked>, With<DisplayCellButton>)>,
     mut commands: Commands,
     q_cell: Query<(Entity, &DisplayCellButton, &DragTarget)>,
     q_dragui: Query<Entity, With<DragUI>>,
     mut writer: EventWriter<UpdateCellIndex>,
 ) {
+    let Ok(_) = q_orig.get(ev.entity()) else {
+        return;
+    };
     for (entity, &DisplayCellButton { index }, drag_target) in &q_cell {
         if let Some(op) = drag_target.op {
             writer.send(UpdateCellIndex {
