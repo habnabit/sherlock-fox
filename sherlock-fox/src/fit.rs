@@ -4,7 +4,9 @@
 
 use bevy::{
     animation::{animated_field, AnimationTarget, AnimationTargetId},
+    input::common_conditions::input_just_released,
     prelude::*,
+    window::PrimaryWindow,
 };
 use petgraph::graph::NodeIndex;
 use uuid::Uuid;
@@ -153,7 +155,7 @@ impl Default for FitTransformAnimationBundle {
     }
 }
 
-pub fn fit_inside_window(
+fn fit_inside_window(
     q_camera: Query<(Entity, &Camera)>,
     q_fit_root: Query<(Entity, &FitWithin), Without<Parent>>,
     mut commands: Commands,
@@ -186,7 +188,7 @@ macro_rules! get_child {
     };
 }
 
-pub fn fit_inside_puzzle(
+fn fit_inside_puzzle(
     ev: Trigger<OnInsert, (FitWithin, DisplayPuzzle)>,
     q_about_target: Query<
         (&FitWithin, &Children),
@@ -221,7 +223,7 @@ pub fn fit_inside_puzzle(
     buttons.set_rect(&mut commands, buttonbox_rect);
 }
 
-pub fn fit_inside_clues(
+fn fit_inside_clues(
     ev: Trigger<OnInsert, (FitWithin, DisplayCluebox)>,
     q_about_target: Query<(&FitWithin, &Children), (With<DisplayCluebox>, Without<DisplayClue>)>,
     q_children: Query<(Entity, &FitWithin), With<DisplayClue>>,
@@ -247,7 +249,7 @@ pub fn fit_inside_clues(
     }
 }
 
-pub fn fit_inside_buttonbox(
+fn fit_inside_buttonbox(
     ev: Trigger<OnInsert, (FitWithin, DisplayButtonbox)>,
     q_about_target: Query<
         (&FitWithin, &Children),
@@ -275,7 +277,7 @@ pub fn fit_inside_buttonbox(
     }
 }
 
-pub fn fit_inside_matrix(
+fn fit_inside_matrix(
     ev: Trigger<OnInsert, (FitWithin, DisplayMatrix)>,
     q_about_target: Query<(&FitWithin, &Children), (With<DisplayMatrix>, Without<DisplayRow>)>,
     q_children: Query<((Entity, &FitWithin), &DisplayRow)>,
@@ -310,7 +312,7 @@ pub fn fit_inside_matrix(
     }
 }
 
-pub fn fit_inside_row(
+fn fit_inside_row(
     ev: Trigger<OnInsert, (FitWithin, DisplayRow)>,
     q_about_target: Query<(&FitWithin, &Children), (With<DisplayRow>, Without<DisplayCell>)>,
     q_children: Query<((Entity, &FitWithin), &DisplayCell)>,
@@ -348,7 +350,7 @@ pub fn fit_inside_row(
     }
 }
 
-pub fn fit_inside_cell(
+fn fit_inside_cell(
     ev: Trigger<OnInsert, (FitWithin, DisplayCell)>,
     q_about_target: Query<(&FitWithin, &Children, &DisplayCell), Without<DisplayCellButton>>,
     q_children: Query<((Entity, &FitWithin), &DisplayCellButton)>,
@@ -391,7 +393,7 @@ pub fn fit_inside_cell(
     }
 }
 
-pub fn fit_to_transform(
+fn fit_to_transform(
     ev: Trigger<OnInsert, FitWithin>,
     mut q_fit: Query<(Entity, &FitWithin, &Parent, &mut Transform)>,
     q_just_fit: Query<&FitWithin>,
@@ -452,7 +454,7 @@ pub fn fit_to_transform(
     }
 }
 
-pub fn fit_background_sprite(
+fn fit_background_sprite(
     ev: Trigger<OnInsert, FitWithin>,
     mut q_fit: Query<(&FitWithin, &mut Sprite), With<FitWithinBackground>>,
 ) {
@@ -462,23 +464,7 @@ pub fn fit_background_sprite(
     sprite.custom_size = Some(fit.rect.size());
 }
 
-pub fn mouse_over_fit(ev: Trigger<Pointer<Over>>, mut commands: Commands) {
-    // info!("mouse over fit {ev:?}");
-    let Some(mut cmd) = commands.get_entity(ev.target) else {
-        return;
-    };
-    cmd.insert(FitHover);
-}
-
-pub fn mouse_out_fit(ev: Trigger<Pointer<Out>>, mut commands: Commands) {
-    // info!("mouse out fit {ev:?}");
-    let Some(mut cmd) = commands.get_entity(ev.target) else {
-        return;
-    };
-    cmd.remove::<FitHover>();
-}
-
-pub fn make_fit_background_sprite(
+fn make_fit_background_sprite(
     ev: Trigger<OnInsert, FitWithinBackground>,
     borders: Res<UIBorders>,
     mut q_target: Query<(&FitWithinBackground, &mut Transform)>,
@@ -497,4 +483,69 @@ pub fn make_fit_background_sprite(
         },
         // NO_PICK,
     ));
+}
+
+fn mouse_over_fit(ev: Trigger<Pointer<Over>>, mut commands: Commands) {
+    // info!("mouse over fit {ev:?}");
+    let Some(mut cmd) = commands.get_entity(ev.target) else {
+        return;
+    };
+    cmd.insert(FitHover);
+}
+
+fn mouse_out_fit(ev: Trigger<Pointer<Out>>, mut commands: Commands) {
+    // info!("mouse out fit {ev:?}");
+    let Some(mut cmd) = commands.get_entity(ev.target) else {
+        return;
+    };
+    cmd.remove::<FitHover>();
+}
+
+fn fit_clicked_down(
+    mut ev: Trigger<Pointer<Down>>,
+    q_hovered: Query<Entity, With<FitHover>>,
+    mut commands: Commands,
+) {
+    let mut trapped = false;
+    for entity in &q_hovered {
+        commands.entity(entity).insert(FitClicked);
+        trapped = true;
+    }
+    if trapped {
+        ev.propagate(false);
+    }
+}
+
+fn fit_clear_clicked(q_clicked: Query<Entity, With<FitClicked>>, mut commands: Commands) {
+    info!("clicked up");
+    for entity in &q_clicked {
+        info!("clearing click on {entity:?}");
+        commands.entity(entity).remove::<FitClicked>();
+    }
+}
+
+pub struct FitPlugin;
+
+impl Plugin for FitPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_observer(fit_clicked_down)
+            .add_observer(fit_background_sprite)
+            .add_observer(fit_inside_buttonbox)
+            .add_observer(fit_inside_cell)
+            .add_observer(fit_inside_clues)
+            .add_observer(fit_inside_matrix)
+            .add_observer(fit_inside_puzzle)
+            .add_observer(fit_inside_row)
+            .add_observer(fit_to_transform)
+            .add_observer(make_fit_background_sprite)
+            .add_observer(mouse_out_fit)
+            .add_observer(mouse_over_fit)
+            .add_systems(
+                Update,
+                (
+                    fit_clear_clicked.run_if(input_just_released(MouseButton::Left)),
+                    fit_inside_window.run_if(any_with_component::<PrimaryWindow>),
+                ),
+            );
+    }
 }

@@ -124,3 +124,11 @@ pub fn adjust_undo_state(
         }
     }
 }
+
+pub struct UndoPlugin;
+
+impl Plugin for UndoPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Update, (add_undo_state, adjust_undo_state));
+    }
+}

@@ -28,10 +28,8 @@ use clues::{
     DynPuzzleClue, PuzzleClues, SameColumnClue,
 };
 use fit::{
-    fit_background_sprite, fit_inside_buttonbox, fit_inside_cell, fit_inside_clues,
-    fit_inside_matrix, fit_inside_puzzle, fit_inside_row, fit_inside_window, fit_to_transform,
-    make_fit_background_sprite, mouse_out_fit, mouse_over_fit, FitClicked, FitHover, FitManip,
-    FitTransformAnimationBundle, FitTransformEdge, FitWithin, FitWithinBackground, FitWithinBundle,
+    FitClicked, FitHover, FitManip, FitTransformAnimationBundle, FitTransformEdge, FitWithin,
+    FitWithinBackground, FitWithinBundle,
 };
 use petgraph::graph::NodeIndex;
 use puzzle::{
@@ -40,7 +38,7 @@ use puzzle::{
 };
 use rand::{distr::Distribution, seq::SliceRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use undo::{add_undo_state, adjust_undo_state, Action, PushNewAction, UndoTree, UndoTreeLocation};
+use undo::{Action, PushNewAction, UndoTree, UndoTreeLocation};
 use uuid::Uuid;
 
 const NO_PICK: PickingBehavior = PickingBehavior {
@@ -51,6 +49,8 @@ const NO_PICK: PickingBehavior = PickingBehavior {
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugins(fit::FitPlugin)
+        .add_plugins(undo::UndoPlugin)
         .init_resource::<Assets<DynPuzzleClue>>()
         .init_resource::<SeededRng>()
         .init_state::<ClueExplanationState>()
@@ -101,15 +101,6 @@ fn main() {
         .add_observer(cell_clicked_down)
         .add_observer(cell_continue_drag)
         .add_observer(clue_explanation_clicked)
-        .add_observer(fit_clicked_down)
-        .add_observer(fit_background_sprite)
-        .add_observer(fit_inside_buttonbox)
-        .add_observer(fit_inside_cell)
-        .add_observer(fit_inside_clues)
-        .add_observer(fit_inside_matrix)
-        .add_observer(fit_inside_puzzle)
-        .add_observer(fit_inside_row)
-        .add_observer(fit_to_transform)
         .add_observer(FitBackgroundMouseInteraction::<DisplayTopButton>::interact_click_down)
         .add_observer(FitBackgroundMouseInteraction::<DisplayTopButton>::interact_click_up)
         .add_observer(FitBackgroundMouseInteraction::<DisplayTopButton>::interact_hover_in)
@@ -117,9 +108,6 @@ fn main() {
         .add_observer(interact_cell_generic::<OnAdd>(1.25))
         .add_observer(interact_cell_generic::<OnRemove>(1.0))
         .add_observer(interact_drag_ui_move)
-        .add_observer(make_fit_background_sprite)
-        .add_observer(mouse_out_fit)
-        .add_observer(mouse_over_fit)
         .add_observer(remove_clue_highlight)
         .add_observer(show_clue_highlight)
         .add_observer(show_dyn_clue)
@@ -130,24 +118,10 @@ fn main() {
             (
                 assign_random_color,
                 show_clues.run_if(input_just_pressed(KeyCode::KeyC)),
-                // (
-                fit_inside_window.run_if(any_with_component::<PrimaryWindow>),
-                // fit_inside_row,
-                // fit_inside_cell,
-                // )
-                //     .chain(),
-                // (
-                //     mouse_inside_window.run_if(any_with_component::<PrimaryWindow>),
-                //     interact_cell,
-                // )
-                //     .chain(),
                 cell_release_drag.run_if(input_just_released(MouseButton::Left)),
                 (cell_update, cell_update_display).chain(),
                 (spawn_row, add_row).chain(),
                 add_clue,
-                add_undo_state,
-                adjust_undo_state,
-                fit_clear_clicked.run_if(input_just_released(MouseButton::Left)),
             ),
         )
         .add_systems(OnEnter(ClueExplanationState::Shown), show_clue_explanation)
@@ -1075,29 +1049,6 @@ fn show_clues(
         commands.spawn(ExplainClueComponent { clue, update });
         clue_state.set(ClueExplanationState::Shown);
         // writer.send(ev);
-    }
-}
-
-fn fit_clicked_down(
-    mut ev: Trigger<Pointer<Down>>,
-    q_hovered: Query<Entity, With<FitHover>>,
-    mut commands: Commands,
-) {
-    let mut trapped = false;
-    for entity in &q_hovered {
-        commands.entity(entity).insert(FitClicked);
-        trapped = true;
-    }
-    if trapped {
-        ev.propagate(false);
-    }
-}
-
-fn fit_clear_clicked(q_clicked: Query<Entity, With<FitClicked>>, mut commands: Commands) {
-    info!("clicked up");
-    for entity in &q_clicked {
-        info!("clearing click on {entity:?}");
-        commands.entity(entity).remove::<FitClicked>();
     }
 }
 
