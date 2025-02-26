@@ -515,9 +515,9 @@ fn fit_clicked_down(
 }
 
 fn fit_clear_clicked(q_clicked: Query<Entity, With<FitClicked>>, mut commands: Commands) {
-    info!("clicked up");
+    // info!("clicked up");
     for entity in &q_clicked {
-        info!("clearing click on {entity:?}");
+        // info!("clearing click on {entity:?}");
         commands.entity(entity).remove::<FitClicked>();
     }
 }
@@ -615,7 +615,7 @@ impl<C: FitColorBackground + Component> FitButtonInteractionPlugin<C, ButtonColo
         let Ok((mut sprite, hover)) = q_target.get_mut(ev.entity()) else {
             return;
         };
-        info!("click up, hover: {:?}", hover);
+        // info!("click up, hover: {:?}", hover);
         sprite.color = if hover.is_some() {
             C::HOVER
         } else {

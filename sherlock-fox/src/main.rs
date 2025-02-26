@@ -72,7 +72,7 @@ fn main() {
         .init_resource::<Assets<DynPuzzleClue>>()
         .init_resource::<SeededRng>()
         .init_state::<ClueExplanationState>()
-        // .add_plugins(WorldInspectorPlugin::new())
+        .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddClue>()
         .add_event::<AddRow>()
         .add_event::<PushNewAction>()
@@ -945,7 +945,7 @@ fn clue_explanation_clicked(
     let Ok((explanation, ExplainClueComponent { update, .. })) = q_explanation.get_single() else {
         return;
     };
-    info!("clicked next {update:#?}");
+    // info!("clicked next {update:#?}");
     clue_state.set(ClueExplanationState::NotShown);
 }
 
