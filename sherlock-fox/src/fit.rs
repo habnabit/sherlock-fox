@@ -465,21 +465,18 @@ fn fit_background_sprite(
 fn make_fit_background_sprite(
     ev: Trigger<OnInsert, FitWithinBackground>,
     borders: Res<UIBorders>,
-    mut q_target: Query<(&FitWithinBackground, &mut Transform)>,
+    q_target: Query<&FitWithinBackground>,
     mut commands: Commands,
 ) {
-    let Ok((background, mut transform)) = q_target.get_mut(ev.entity()) else {
+    let Ok(background) = q_target.get(ev.entity()) else {
         return;
     };
-    // transform.translation.z -= 5.;
-    // info!("transform: {transform:?}");
     commands.entity(ev.entity()).insert((
         borders.make_sprite(background.index, background.color),
         PickingBehavior {
             should_block_lower: background.interactable,
             is_hoverable: background.interactable,
         },
-        // NO_PICK,
     ));
 }
 

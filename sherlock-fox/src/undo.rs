@@ -36,7 +36,7 @@ pub struct UndoTreeLocation {
     pub current: NodeIndex,
 }
 
-pub fn add_undo_state(
+fn add_undo_state(
     mut ev_rx: EventReader<PushNewAction>,
     mut q_tree: Query<&mut UndoTree>,
     mut q_tree_loc: Query<&mut UndoTreeLocation>,
@@ -65,17 +65,17 @@ pub fn add_undo_state(
     }
 }
 
-pub fn adjust_undo_state(
+fn adjust_undo_state(
     mut ev_rx: EventReader<FitClickedEvent<TopButtonAction>>,
     mut q_puzzle: Query<&mut Puzzle>,
-    mut q_tree: Query<&mut UndoTree>,
+    q_tree: Query<&UndoTree>,
     mut q_tree_loc: Query<&mut UndoTreeLocation>,
     mut update_display_tx: EventWriter<UpdateCellDisplay>,
 ) {
     let Ok(mut puzzle) = q_puzzle.get_single_mut() else {
         return;
     };
-    let Ok(mut tree) = q_tree.get_single_mut() else {
+    let Ok(tree) = q_tree.get_single() else {
         return;
     };
     let Ok(mut tree_loc) = q_tree_loc.get_single_mut() else {

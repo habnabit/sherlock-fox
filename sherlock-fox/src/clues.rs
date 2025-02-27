@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: EUPL-1.2
 
-use bevy::prelude::*;
+use bevy::{prelude::*, utils::HashMap};
 use rand::Rng;
 use typemap::ShareCloneMap;
 
@@ -152,10 +152,12 @@ pub enum ClueExplanationResolvedChunk<'d> {
 
 pub trait PuzzleClue: std::fmt::Debug {
     fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance;
-    fn spawn_into<'s, 'p: 's>(
-        &'s self,
-        puzzle: &'p Puzzle,
-    ) -> Box<dyn FnOnce(&mut ChildBuilder) + 's>;
+    fn spawn_into(
+        &self,
+        parent: &mut ChildBuilder,
+        puzzle: &Puzzle,
+        cells: &mut HashMap<CellLoc, Entity>,
+    );
 }
 
 #[derive(Reflect, Asset, Debug)]
@@ -163,7 +165,7 @@ pub trait PuzzleClue: std::fmt::Debug {
 pub struct DynPuzzleClue(#[reflect(ignore)] Box<(dyn PuzzleClue + Sync + Send + 'static)>);
 
 impl FromReflect for DynPuzzleClue {
-    fn from_reflect(reflect: &dyn PartialReflect) -> Option<Self> {
+    fn from_reflect(_reflect: &dyn PartialReflect) -> Option<Self> {
         todo!()
     }
 }
@@ -618,52 +620,59 @@ impl PuzzleClue for SameColumnClue {
         None
     }
 
-    fn spawn_into<'s, 'p: 's>(
-        &'s self,
-        puzzle: &'p Puzzle,
-    ) -> Box<dyn FnOnce(&mut ChildBuilder) + 's> {
-        Box::new(|builder| {
-            let sprite_size = Vec2::new(32., 32.);
-            let size_sprite = |mut sprite: Sprite| {
-                sprite.custom_size = Some(sprite_size);
-                sprite
-            };
-            let (sprite1, color1) = puzzle.cell_answer_display(self.loc);
-            builder
+    fn spawn_into(
+        &self,
+        parent: &mut ChildBuilder,
+        puzzle: &Puzzle,
+        cells: &mut HashMap<CellLoc, Entity>,
+    ) {
+        let sprite_size = Vec2::new(32., 32.);
+        let size_sprite = |mut sprite: Sprite| {
+            sprite.custom_size = Some(sprite_size);
+            sprite
+        };
+        let (sprite1, color1) = puzzle.cell_answer_display(self.loc);
+        let id1 = parent
+            .spawn((
+                Sprite::from_color(color1, sprite_size),
+                Transform::from_xyz(0., -32., 0.),
+            ))
+            .with_child((
+                size_sprite(sprite1),
+                Transform::from_xyz(0., 0., 1.),
+                NO_PICK,
+            ))
+            .id();
+        cells.insert(self.loc, id1);
+        let loc2 = self.loc2();
+        let (sprite2, color2) = puzzle.cell_answer_display(loc2);
+        let id2 = parent
+            .spawn((
+                Sprite::from_color(color2, sprite_size),
+                Transform::from_xyz(0., 0., 0.),
+            ))
+            .with_child((
+                size_sprite(sprite2),
+                Transform::from_xyz(0., 0., 1.),
+                NO_PICK,
+            ))
+            .id();
+        cells.insert(loc2, id2);
+        if let Some(loc3) = self.loc3() {
+            let (sprite3, color3) = puzzle.cell_answer_display(loc3);
+            let id3 = parent
                 .spawn((
-                    Sprite::from_color(color1, sprite_size),
-                    Transform::from_xyz(0., -32., 0.),
+                    Sprite::from_color(color3, sprite_size),
+                    Transform::from_xyz(0., 32., 0.),
                 ))
                 .with_child((
-                    size_sprite(sprite1),
+                    size_sprite(sprite3),
                     Transform::from_xyz(0., 0., 1.),
                     NO_PICK,
-                ));
-            let (sprite2, color2) = puzzle.cell_answer_display(self.loc2());
-            builder
-                .spawn((
-                    Sprite::from_color(color2, sprite_size),
-                    Transform::from_xyz(0., 0., 0.),
                 ))
-                .with_child((
-                    size_sprite(sprite2),
-                    Transform::from_xyz(0., 0., 1.),
-                    NO_PICK,
-                ));
-            if let Some(loc3) = self.loc3() {
-                let (sprite3, color3) = puzzle.cell_answer_display(loc3);
-                builder
-                    .spawn((
-                        Sprite::from_color(color3, sprite_size),
-                        Transform::from_xyz(0., 32., 0.),
-                    ))
-                    .with_child((
-                        size_sprite(sprite3),
-                        Transform::from_xyz(0., 0., 1.),
-                        NO_PICK,
-                    ));
-            }
-        })
+                .id();
+            cells.insert(loc3, id3);
+        }
     }
 }
 
@@ -694,10 +703,10 @@ impl AdjacentColumnClue {
     }
 }
 
-static ADJACENT_COLUMN_SOLO: &[ClueExplanationChunk] = explanation![
-    Loc2Mirrored:
-    %{loc2}, "is selected, therefore", %{loc1}, "must be selected.",
-];
+// static ADJACENT_COLUMN_SOLO: &[ClueExplanationChunk] = explanation![
+//     Loc2Mirrored:
+//     %{loc2}, "is selected, therefore", %{loc1}, "must be selected.",
+// ];
 
 static ADJACENT_COLUMN_CLEAR: &[ClueExplanationChunk] = explanation![
     Loc2Mirrored:
@@ -717,21 +726,21 @@ impl PuzzleClue for AdjacentColumnClue {
         for mut sub_resolver in resolver.iter_all_cols::<IfThen<_, _>>() {
             // info!("adjacent sub resolver: {sub_resolver:#?}");
             sub_resolver
-                .if_then(
-                    |Loc2Mirrored {
-                         loc1: l1,
-                         loc2: l2,
-                         loc2_p: l2p,
-                     }| {
-                        // info!("checking adjacent solo\n  l1={l1:?}\n  l2={l2:?}  \n  l3={l2p:?}");
-                        return None;
-                        if l1.is_enabled_not_solo() && (l2.is_solo || l2p.is_solo) {
-                            Some(l1.as_solo())
-                        } else {
-                            None
-                        }
-                    },
-                )
+                // .if_then(
+                //     |Loc2Mirrored {
+                //          loc1: l1,
+                //          loc2: l2,
+                //          loc2_p: l2p,
+                //      }| {
+                //         // info!("checking adjacent solo\n  l1={l1:?}\n  l2={l2:?}  \n  l3={l2p:?}");
+                //         return None;
+                //         if l1.is_enabled_not_solo() && (l2.is_solo || l2p.is_solo) {
+                //             Some(l1.as_solo())
+                //         } else {
+                //             None
+                //         }
+                //     },
+                // )
                 .if_then(
                     |l @ Loc2Mirrored {
                          loc1: l1,
@@ -755,40 +764,44 @@ impl PuzzleClue for AdjacentColumnClue {
         None
     }
 
-    fn spawn_into<'s, 'p: 's>(
-        &'s self,
-        puzzle: &'p Puzzle,
-    ) -> Box<dyn FnOnce(&mut ChildBuilder) + 's> {
-        Box::new(|builder| {
-            let sprite_size = Vec2::new(32., 32.);
-            let size_sprite = |mut sprite: Sprite| {
-                sprite.custom_size = Some(sprite_size);
-                sprite
-            };
-            builder.spawn(Text2d::new(format!("{}", self.colspan())));
-            let (sprite1, color1) = puzzle.cell_answer_display(self.loc1);
-            builder
-                .spawn((
-                    Sprite::from_color(color1, sprite_size),
-                    Transform::from_xyz(-25., 0., 0.),
-                ))
-                .with_child((
-                    size_sprite(sprite1),
-                    Transform::from_xyz(0., 0., 1.),
-                    NO_PICK,
-                ));
-            let (sprite2, color2) = puzzle.cell_answer_display(self.loc2);
-            builder
-                .spawn((
-                    Sprite::from_color(color2, sprite_size),
-                    Transform::from_xyz(25., 0., 0.),
-                ))
-                .with_child((
-                    size_sprite(sprite2),
-                    Transform::from_xyz(0., 0., 1.),
-                    NO_PICK,
-                ));
-        })
+    fn spawn_into(
+        &self,
+        parent: &mut ChildBuilder,
+        puzzle: &Puzzle,
+        cells: &mut HashMap<CellLoc, Entity>,
+    ) {
+        let sprite_size = Vec2::new(32., 32.);
+        let size_sprite = |mut sprite: Sprite| {
+            sprite.custom_size = Some(sprite_size);
+            sprite
+        };
+        parent.spawn(Text2d::new(format!("{}", self.colspan())));
+        let (sprite1, color1) = puzzle.cell_answer_display(self.loc1);
+        let id1 = parent
+            .spawn((
+                Sprite::from_color(color1, sprite_size),
+                Transform::from_xyz(-25., 0., 0.),
+            ))
+            .with_child((
+                size_sprite(sprite1),
+                Transform::from_xyz(0., 0., 1.),
+                NO_PICK,
+            ))
+            .id();
+        cells.insert(self.loc1, id1);
+        let (sprite2, color2) = puzzle.cell_answer_display(self.loc2);
+        let id2 = parent
+            .spawn((
+                Sprite::from_color(color2, sprite_size),
+                Transform::from_xyz(25., 0., 0.),
+            ))
+            .with_child((
+                size_sprite(sprite2),
+                Transform::from_xyz(0., 0., 1.),
+                NO_PICK,
+            ))
+            .id();
+        cells.insert(self.loc2, id2);
     }
 }
 
@@ -861,54 +874,54 @@ impl PuzzleClue for BetweenColumnsClue {
         None
     }
 
-    fn spawn_into<'s, 'p: 's>(
-        &'s self,
-        puzzle: &'p Puzzle,
-    ) -> Box<dyn FnOnce(&mut ChildBuilder) + 's> {
-        Box::new(|builder| {
-            let sprite_size = Vec2::new(32., 32.);
-            let size_sprite = |mut sprite: Sprite| {
-                sprite.custom_size = Some(sprite_size);
-                sprite
-            };
-            let (loc1, loc3) = if self.flip_on_display {
-                (self.loc3, self.loc1)
-            } else {
-                (self.loc1, self.loc3)
-            };
-            let (sprite1, color1) = puzzle.cell_answer_display(loc1);
-            builder
-                .spawn((
-                    Sprite::from_color(color1, sprite_size),
-                    Transform::from_xyz(-32., 0., 0.),
-                ))
-                .with_child((
-                    size_sprite(sprite1),
-                    Transform::from_xyz(0., 0., 1.),
-                    NO_PICK,
-                ));
-            let (sprite2, color2) = puzzle.cell_answer_display(self.loc2);
-            builder
-                .spawn((
-                    Sprite::from_color(color2, sprite_size),
-                    Transform::from_xyz(0., 0., -1.),
-                ))
-                .with_child((
-                    size_sprite(sprite2),
-                    Transform::from_xyz(0., 0., 1.),
-                    NO_PICK,
-                ));
-            let (sprite3, color3) = puzzle.cell_answer_display(loc3);
-            builder
-                .spawn((
-                    Sprite::from_color(color3, sprite_size),
-                    Transform::from_xyz(32., 0., 0.),
-                ))
-                .with_child((
-                    size_sprite(sprite3),
-                    Transform::from_xyz(0., 0., 1.),
-                    NO_PICK,
-                ));
-        })
+    fn spawn_into(
+        &self,
+        parent: &mut ChildBuilder,
+        puzzle: &Puzzle,
+        cells: &mut HashMap<CellLoc, Entity>,
+    ) {
+        let sprite_size = Vec2::new(32., 32.);
+        let size_sprite = |mut sprite: Sprite| {
+            sprite.custom_size = Some(sprite_size);
+            sprite
+        };
+        let (loc1, loc3) = if self.flip_on_display {
+            (self.loc3, self.loc1)
+        } else {
+            (self.loc1, self.loc3)
+        };
+        let (sprite1, color1) = puzzle.cell_answer_display(loc1);
+        parent
+            .spawn((
+                Sprite::from_color(color1, sprite_size),
+                Transform::from_xyz(-32., 0., 0.),
+            ))
+            .with_child((
+                size_sprite(sprite1),
+                Transform::from_xyz(0., 0., 1.),
+                NO_PICK,
+            ));
+        let (sprite2, color2) = puzzle.cell_answer_display(self.loc2);
+        parent
+            .spawn((
+                Sprite::from_color(color2, sprite_size),
+                Transform::from_xyz(0., 0., -1.),
+            ))
+            .with_child((
+                size_sprite(sprite2),
+                Transform::from_xyz(0., 0., 1.),
+                NO_PICK,
+            ));
+        let (sprite3, color3) = puzzle.cell_answer_display(loc3);
+        parent
+            .spawn((
+                Sprite::from_color(color3, sprite_size),
+                Transform::from_xyz(32., 0., 0.),
+            ))
+            .with_child((
+                size_sprite(sprite3),
+                Transform::from_xyz(0., 0., 1.),
+                NO_PICK,
+            ));
     }
 }

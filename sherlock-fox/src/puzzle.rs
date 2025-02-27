@@ -54,6 +54,13 @@ impl CellLocIndex {
         }
     }
 
+    pub fn collapse_index(&self) -> CellLoc {
+        CellLoc {
+            row_nr: self.loc.row_nr,
+            cell_nr: self.index as isize,
+        }
+    }
+
     fn as_update(&self, op: UpdateCellIndexOperation) -> UpdateCellIndex {
         UpdateCellIndex {
             index: *self,
@@ -354,6 +361,14 @@ impl Puzzle {
     // TODO: too many `as usize`
     pub fn cell_answer_index(&self, loc: CellLoc) -> usize {
         self.rows[loc.row_nr].cell_answers[loc.cell_nr as usize]
+    }
+
+    pub fn answer_loc(&self, index: CellLocIndex) -> CellLoc {
+        let cell_nr = self.rows[index.loc.row_nr].cell_answers[index.index] as isize;
+        CellLoc {
+            cell_nr,
+            ..index.loc
+        }
     }
 
     fn one_inference_step(

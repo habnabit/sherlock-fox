@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: EUPL-1.2
 
-#![feature(try_blocks, cmp_minmax)]
+#![feature(try_blocks, cmp_minmax, lazy_get)]
 
 mod animation;
 mod clues;
@@ -10,7 +10,7 @@ mod fit;
 mod puzzle;
 mod undo;
 
-use std::{any::TypeId, time::Duration};
+use std::{any::TypeId, cell::LazyCell, time::Duration};
 
 use animation::{AnimatorPlugin, SavedAnimationNode};
 use bevy::{
@@ -20,6 +20,7 @@ use bevy::{
     },
     color::palettes::css,
     prelude::*,
+    sprite::Anchor,
     utils::hashbrown::{HashMap, HashSet},
     window::PrimaryWindow,
 };
@@ -75,6 +76,7 @@ fn main() {
         .add_plugins(WorldInspectorPlugin::new())
         .add_event::<AddClue>()
         .add_event::<AddRow>()
+        .add_event::<PlaceArrow>()
         .add_event::<PushNewAction>()
         .add_event::<UpdateCellDisplay>()
         .add_event::<UpdateCellIndex>()
@@ -133,6 +135,8 @@ fn main() {
                 (cell_update, cell_update_display).chain(),
                 (spawn_row, add_row).chain(),
                 add_clue,
+                animate_arrow,
+                place_arrow,
             ),
         )
         .add_systems(OnEnter(ClueExplanationState::Shown), show_clue_explanation)
@@ -146,7 +150,7 @@ fn main() {
 struct SeededRng(#[reflect(ignore)] ChaCha8Rng);
 
 impl FromReflect for SeededRng {
-    fn from_reflect(reflect: &dyn PartialReflect) -> Option<Self> {
+    fn from_reflect(_reflect: &dyn PartialReflect) -> Option<Self> {
         todo!()
     }
 }
@@ -179,6 +183,8 @@ fn show_clue_explanation(
     q_clue: Query<(Entity, &ExplainClueComponent)>,
     q_clues: Query<(Entity, &PuzzleClueComponent)>,
     q_cell: Query<(Entity, &DisplayCellButton)>,
+    q_transform: Query<&GlobalTransform>,
+    mut arrow_tx: EventWriter<PlaceArrow>,
     // clues: Res<Assets<DynPuzzleClue>>,
 ) {
     #[derive(Debug, Default)]
@@ -203,24 +209,25 @@ fn show_clue_explanation(
             }
         }
     }
-    let Ok((clue_display_entity, clue_component)) = q_clue.get_single() else {
+    let Ok((clue_exp_entity, clue_exp_component)) = q_clue.get_single() else {
         return;
     };
-    let clue_id = clue_component.clue.id();
+    let clue_id = clue_exp_component.clue.id();
     // let Some(clue) = clues.get(clue_id) else {
     //     return;
     // };
-    let Some(ref explanation) = clue_component.update.explanation else {
-        warn!("couldn't show explanation on {clue_component:#?}");
+    let Some(ref explanation) = clue_exp_component.update.explanation else {
+        warn!("couldn't show explanation on {clue_exp_component:#?}");
         return;
     };
-    let Some((clue_entity, _)) = q_clues.iter().find(|(_, c)| c.0.id() == clue_id) else {
+    let Some((clue_entity, clue_component)) = q_clues.iter().find(|(_, c)| c.clue.id() == clue_id)
+    else {
         return;
     };
     commands.entity(clue_entity).insert(ExplanationHilight);
     let mut cell_highlight = HashSet::new();
     commands
-        .entity(clue_display_entity)
+        .entity(clue_exp_entity)
         .insert((
             Node {
                 width: Val::Vw(35.),
@@ -256,9 +263,28 @@ fn show_clue_explanation(
             built_text.drain_into(parent);
         });
 
+    info!("ok what's this map {:#?}", clue_component.cells);
     for (cell, button) in &q_cell {
         if cell_highlight.contains(&button.index) {
+            info!("highlighting {:?} at {:?}", button, cell);
             commands.entity(cell).insert(ExplanationHilight);
+            let Ok(to_transform) = q_transform.get(cell) else {
+                continue;
+            };
+            let from_loc = q_puzzle.answer_loc(button.index);
+            info!("from {from_loc:?}");
+            let Some(from_entity) = clue_component.cells.get(&from_loc) else {
+                continue;
+            };
+            info!("  from {from_entity:?}");
+            let Ok(from_transform) = q_transform.get(*from_entity) else {
+                continue;
+            };
+            info!("  from {from_transform:?} to {to_transform:?}");
+            arrow_tx.send(PlaceArrow {
+                from_loc: from_transform.compute_transform().translation,
+                to_loc: to_transform.compute_transform().translation,
+            });
         }
     }
 }
@@ -348,26 +374,38 @@ fn remove_clue_highlight(
 }
 
 #[derive(Debug, Component, Reflect)]
-struct PuzzleClueComponent(Handle<DynPuzzleClue>);
+struct PuzzleClueComponent {
+    clue: Handle<DynPuzzleClue>,
+    cells: HashMap<CellLoc, Entity>,
+}
+
+impl PuzzleClueComponent {
+    fn new(clue: Handle<DynPuzzleClue>) -> Self {
+        PuzzleClueComponent {
+            clue,
+            cells: Default::default(),
+        }
+    }
+}
 
 fn show_dyn_clue(
     ev: Trigger<OnInsert, PuzzleClueComponent>,
-    q_clue: Query<&PuzzleClueComponent>,
+    mut q_clue: Query<&mut PuzzleClueComponent>,
     q_puzzle: Single<&Puzzle>,
     clues: Res<Assets<DynPuzzleClue>>,
     mut commands: Commands,
 ) {
     let puzzle = *q_puzzle;
-    let Ok(clue) = q_clue.get(ev.entity()) else {
+    let Ok(mut clue_component) = q_clue.get_mut(ev.entity()) else {
         return;
     };
-    let Some(clue) = clues.get(clue.0.id()) else {
+    let Some(clue) = clues.get(clue_component.clue.id()) else {
         return;
     };
     info!("dyn clue ev={ev:?} clue={clue:?}");
     commands
         .entity(ev.entity())
-        .with_children(clue.spawn_into(puzzle));
+        .with_children(|parent| clue.spawn_into(parent, puzzle, &mut clue_component.cells));
 }
 
 #[derive(Bundle)]
@@ -581,7 +619,7 @@ fn spawn_row(
     asset_server: Res<AssetServer>,
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
-    static LENGTH_SAMPLE: &[usize] = &[4, 5, 5, 5, 5, 6, 6, 7];
+    // static LENGTH_SAMPLE: &[usize] = &[4, 5, 5, 5, 5, 6, 6, 7];
     config.timer.tick(time.delta());
     if config.timer.finished() {
         if puzzle.rows.len() < 5 {
@@ -630,8 +668,8 @@ fn spawn_row(
                 match rng.0.random_range(0..3) {
                     0 => clue_assets.add(SameColumnClue::new_random(&mut rng.0, &puzzle)?),
                     _ => clue_assets.add(AdjacentColumnClue::new_random(&mut rng.0, &puzzle)?),
-                    2 => clue_assets.add(BetweenColumnsClue::new_random(&mut rng.0, &puzzle)?),
-                    _ => unreachable!(),
+                    // 2 => clue_assets.add(BetweenColumnsClue::new_random(&mut rng.0, &puzzle)?),
+                    // _ => unreachable!(),
                 }
             }) else {
                 return;
@@ -803,10 +841,10 @@ fn add_row(
                                                 sprite,
                                                 Transform::from_xyz(0., 0., 1.),
                                                 NO_PICK,
-                                                DisplayCellButton {
-                                                    index: CellLocIndex { loc, index },
-                                                },
-                                                HoverAnimationBundle::new(cell_player),
+                                                // DisplayCellButton {
+                                                //     index: CellLocIndex { loc, index },
+                                                // },
+                                                // HoverAnimationBundle::new(cell_player),
                                                 // AssignRandomColor,
                                             ));
                                     }
@@ -835,7 +873,7 @@ fn add_clue(
     for AddClue { clue } in reader.read() {
         puzzle_clues.clues.push(clue.clone());
         commands.entity(cluebox_e_fit.0).with_child((
-            PuzzleClueComponent(clue.clone_weak()),
+            PuzzleClueComponent::new(clue.clone_weak()),
             FitWithinBundle::new(),
             DisplayClue,
             ExplanationBounceAnimationBundle::new(cluebox_e_fit.0),
@@ -942,7 +980,7 @@ fn clue_explanation_clicked(
     mut clue_state: ResMut<NextState<ClueExplanationState>>,
 ) {
     // info!("clicked in ?");
-    let Ok((explanation, ExplainClueComponent { update, .. })) = q_explanation.get_single() else {
+    let Ok(_) = q_explanation.get_single() else {
         return;
     };
     // info!("clicked next {update:#?}");
@@ -1157,27 +1195,33 @@ fn cell_update_display(
     q_cell: Query<(Entity, &DisplayCellButton), Without<DisplayCell>>,
     mut commands: Commands,
 ) {
-    let mut bg_map = HashMap::new();
-    for (cell, sprite) in &mut q_bg {
-        bg_map.insert(cell.loc, sprite);
-    }
-    let mut entity_map = HashMap::<_, Vec<_>>::new();
-    for (entity, &DisplayCellButton { index }) in &q_cell {
+    let mut bg_map = LazyCell::new(|| {
+        let mut bg_map = HashMap::new();
+        for (cell, sprite) in &mut q_bg {
+            bg_map.insert(cell.loc, sprite);
+        }
+        bg_map
+    });
+    let mut entity_map = LazyCell::new(|| {
+        let mut entity_map = HashMap::<_, Vec<_>>::new();
+        for (entity, &DisplayCellButton { index }) in &q_cell {
+            entity_map
+                .entry(index.loc)
+                .or_default()
+                .push((entity, index));
+        }
         entity_map
-            .entry(index.loc)
-            .or_default()
-            .push((entity, index));
-    }
+    });
     for &UpdateCellDisplay { loc } in reader.read() {
         let sel = puzzle.cell_selection(loc);
-        let Some(buttons) = entity_map.get_mut(&loc) else {
+        let Some(buttons) = LazyCell::force_mut(&mut entity_map).get_mut(&loc) else {
             unreachable!()
         };
         // info!("updating cell={cell:?}");
         buttons.sort_by_key(|t| t.0);
         let sel_solo = sel.is_any_solo();
 
-        if let Some(sprite) = bg_map.get_mut(&loc) {
+        if let Some(sprite) = LazyCell::force_mut(&mut bg_map).get_mut(&loc) {
             let color = if !sel.is_enabled(puzzle.cell_answer_index(loc)) {
                 INVALID_CELL_BORDER_COLOR
             } else {
@@ -1234,6 +1278,72 @@ impl UIBorders {
         sprite.color = color;
         sprite.image_mode = SpriteImageMode::Sliced(self.slicer.clone());
         sprite
+    }
+}
+
+#[derive(Debug, Component, Reflect)]
+struct AnimatedArrow {
+    index: usize,
+    frame_timer: Timer,
+}
+
+fn animate_arrow(time: Res<Time>, mut q_anim: Query<(&mut AnimatedArrow, &mut Sprite)>) {
+    for (mut anim, mut sprite) in &mut q_anim {
+        anim.frame_timer.tick(time.delta());
+        if anim.frame_timer.just_finished() {
+            anim.index = (anim.index + 1) % 3;
+            let Some(atlas) = &mut sprite.texture_atlas else {
+                continue;
+            };
+            atlas.index = anim.index;
+        }
+    }
+}
+
+#[derive(Event, Debug)]
+struct PlaceArrow {
+    from_loc: Vec3,
+    to_loc: Vec3,
+}
+
+fn place_arrow(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut texture_atlases: ResMut<Assets<TextureAtlasLayout>>,
+    mut loc_rx: EventReader<PlaceArrow>,
+) {
+    let layout = LazyCell::new(move || {
+        texture_atlases.add(TextureAtlasLayout::from_grid(
+            UVec2::new(6, 13),
+            1,
+            3,
+            None,
+            None,
+        ))
+    });
+    for ev in loc_rx.read() {
+        commands.spawn((
+            Sprite {
+                image: asset_server.load("arrow-shaft.png"),
+                image_mode: SpriteImageMode::Tiled {
+                    tile_x: true,
+                    tile_y: false,
+                    stretch_value: 0.5,
+                },
+                texture_atlas: Some(TextureAtlas {
+                    layout: (*layout).clone(),
+                    index: 0,
+                }),
+                custom_size: Some(Vec2::new(300., 10.)),
+                anchor: Anchor::CenterLeft,
+                ..default()
+            },
+            Transform::from_translation(ev.to_loc.with_z(10.)),
+            AnimatedArrow {
+                index: 0,
+                frame_timer: Timer::new(Duration::from_secs_f32(0.05), TimerMode::Repeating),
+            },
+        ));
     }
 }
 
