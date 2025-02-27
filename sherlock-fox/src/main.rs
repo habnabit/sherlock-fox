@@ -26,8 +26,8 @@ use bevy::{
 };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use clues::{
-    AdjacentColumnClue, BetweenColumnsClue, ClueExplanation, ClueExplanationResolvedChunk,
-    DynPuzzleClue, PuzzleClues, SameColumnClue,
+    AdjacentColumnClue, ClueExplanation, ClueExplanationResolvedChunk, DynPuzzleClue, PuzzleClues,
+    SameColumnClue,
 };
 use fit::{
     ButtonClick, ButtonColorBackground, ButtonScale, FitButton, FitClicked, FitClickedEvent,
@@ -36,8 +36,8 @@ use fit::{
 };
 use petgraph::graph::NodeIndex;
 use puzzle::{
-    CellLoc, CellLocIndex, Puzzle, PuzzleCellDisplay, PuzzleCellSelection, PuzzleRow,
-    UpdateCellIndexOperation,
+    CellLoc, CellLocAnswer, CellLocIndex, LRow, Puzzle, PuzzleCellDisplay, PuzzleCellSelection,
+    PuzzleRow, RowAnswer, UpdateCellIndexOperation,
 };
 use rand::{distr::Distribution, seq::SliceRandom, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -172,6 +172,9 @@ enum ClueExplanationState {
 struct ExplanationHilight;
 
 #[derive(Debug, Component, Reflect)]
+struct ExplanationArrows;
+
+#[derive(Debug, Component, Reflect)]
 struct ExplainClueComponent {
     clue: Handle<DynPuzzleClue>,
     update: UpdateCellIndex,
@@ -263,6 +266,13 @@ fn show_clue_explanation(
             built_text.drain_into(parent);
         });
 
+    let parent = commands
+        .spawn((
+            ExplanationArrows,
+            Transform::default(),
+            InheritedVisibility::VISIBLE,
+        ))
+        .id();
     info!("ok what's this map {:#?}", clue_component.cells);
     for (cell, button) in &q_cell {
         if cell_highlight.contains(&button.index) {
@@ -271,9 +281,10 @@ fn show_clue_explanation(
             let Ok(to_transform) = q_transform.get(cell) else {
                 continue;
             };
-            let from_loc = q_puzzle.answer_loc(button.index);
-            info!("from {from_loc:?}");
-            let Some(from_entity) = clue_component.cells.get(&from_loc) else {
+            let Some(from_entity) = clue_component
+                .cells
+                .get(&button.index.decay_column().upgrade_to_answer())
+            else {
                 continue;
             };
             info!("  from {from_entity:?}");
@@ -282,6 +293,7 @@ fn show_clue_explanation(
             };
             info!("  from {from_transform:?} to {to_transform:?}");
             arrow_tx.send(PlaceArrow {
+                parent,
                 from_loc: from_transform.compute_transform().translation,
                 to_loc: to_transform.compute_transform().translation,
             });
@@ -294,6 +306,7 @@ fn hide_clue_explanation(
     // q_puzzle: Single<&Puzzle>,
     q_explanation: Query<(Entity, &ExplainClueComponent)>,
     q_clues: Query<Entity, With<ExplanationHilight>>,
+    q_arrows: Query<Entity, With<ExplanationArrows>>,
     mut writer: EventWriter<UpdateCellIndex>,
 ) {
     for (explanation_entity, explanation) in &q_explanation {
@@ -302,6 +315,9 @@ fn hide_clue_explanation(
     }
     for clue_entity in &q_clues {
         commands.entity(clue_entity).remove::<ExplanationHilight>();
+    }
+    for arrows_entity in &q_arrows {
+        commands.entity(arrows_entity).despawn_recursive();
     }
 }
 
@@ -376,7 +392,7 @@ fn remove_clue_highlight(
 #[derive(Debug, Component, Reflect)]
 struct PuzzleClueComponent {
     clue: Handle<DynPuzzleClue>,
-    cells: HashMap<CellLoc, Entity>,
+    cells: HashMap<RowAnswer, Entity>,
 }
 
 impl PuzzleClueComponent {
@@ -497,7 +513,7 @@ struct DisplayMatrix;
 
 #[derive(Reflect, Debug, Component)]
 struct DisplayRow {
-    row_nr: usize,
+    row: LRow,
 }
 
 #[derive(Reflect, Debug, Component)]
@@ -622,7 +638,7 @@ fn spawn_row(
     // static LENGTH_SAMPLE: &[usize] = &[4, 5, 5, 5, 5, 6, 6, 7];
     config.timer.tick(time.delta());
     if config.timer.finished() {
-        if puzzle.rows.len() < 5 {
+        if puzzle.n_rows() < 5 {
             // let len = LENGTH_SAMPLE.choose(&mut rng.0).cloned().unwrap();
             let len = 5;
             let tileset = config.tileset_pool.pop().unwrap();
@@ -653,12 +669,13 @@ fn spawn_row(
                 commands.spawn(UndoTree { tree, root });
                 commands.spawn(UndoTreeLocation { current: root });
 
-                let row_nr = rng.0.random_range(0..puzzle.rows.len());
-                let cell_nr = rng.0.random_range(0..puzzle.max_column) as isize;
-                let loc = CellLoc { row_nr, cell_nr };
-                let index = puzzle.cell_answer_index(loc);
+                let loc = CellLoc {
+                    row: puzzle.random_row(&mut rng.0),
+                    col: puzzle.random_column(&mut rng.0),
+                };
+                let index = puzzle.answer_at(loc).decay_to_ind();
                 update_cell_tx.send(UpdateCellIndex {
-                    index: CellLocIndex { loc, index },
+                    index,
                     op: UpdateCellIndexOperation::Solo,
                     explanation: None,
                 });
@@ -788,9 +805,8 @@ fn add_row(
     };
     let mut spawned = false;
     for ev in reader.read() {
-        let row_nr = puzzle.rows.len();
-        puzzle.add_row(ev.row.clone());
-        let puzzle_row = &puzzle.rows[row_nr];
+        let row = puzzle.add_row(ev.row.clone());
+        let puzzle_row = puzzle.row_at(row);
 
         commands
             .entity(matrix_e_fit.0)
@@ -799,12 +815,12 @@ fn add_row(
                     .spawn((
                         FitWithinBundle::new(),
                         // RandomColorSprite::new(),
-                        DisplayRow { row_nr },
+                        DisplayRow { row },
                         FitTransformAnimationBundle::new(matrix_e_fit.0),
                     ))
                     .with_children(|row_spawner| {
-                        for cell_nr in 0..puzzle_row.len() as isize {
-                            let loc = CellLoc { row_nr, cell_nr };
+                        for col in puzzle.iter_cols() {
+                            let loc = CellLoc { row, col };
                             let graph = AnimationGraph::new();
                             let cell_player = row_spawner
                                 .spawn((
@@ -821,7 +837,7 @@ fn add_row(
                                 ))
                                 .with_children(|cell_spawner| {
                                     let button_size = Vec2::new(32., 32.);
-                                    for index in 0..puzzle_row.len() {
+                                    for index in puzzle_row.iter_indices() {
                                         let mut sprite = puzzle_row.display_sprite(index);
                                         sprite.custom_size = Some(button_size - Vec2::new(5., 5.));
                                         sprite.color = Color::hsla(0., 0., 1., 1.);
@@ -1222,7 +1238,7 @@ fn cell_update_display(
         let sel_solo = sel.is_any_solo();
 
         if let Some(sprite) = LazyCell::force_mut(&mut bg_map).get_mut(&loc) {
-            let color = if !sel.is_enabled(puzzle.cell_answer_index(loc)) {
+            let color = if !sel.is_enabled(puzzle.answer_at(loc).index.decay_to_ind()) {
                 INVALID_CELL_BORDER_COLOR
             } else {
                 DEFAULT_CELL_BORDER_COLOR
@@ -1302,6 +1318,7 @@ fn animate_arrow(time: Res<Time>, mut q_anim: Query<(&mut AnimatedArrow, &mut Sp
 
 #[derive(Event, Debug)]
 struct PlaceArrow {
+    parent: Entity,
     from_loc: Vec3,
     to_loc: Vec3,
 }
@@ -1322,7 +1339,14 @@ fn place_arrow(
         ))
     });
     for ev in loc_rx.read() {
-        commands.spawn((
+        let from_xy = ev.from_loc.xy();
+        let to_xy = ev.to_loc.xy();
+        let distance = from_xy.distance(to_xy);
+        let angle = (from_xy - to_xy).to_angle();
+        info!("placing {ev:#?} => distance {distance} angle {angle}");
+        let mut transform = Transform::from_translation(ev.to_loc.with_z(10.));
+        transform.rotate_z(angle);
+        commands.entity(ev.parent).with_child((
             Sprite {
                 image: asset_server.load("arrow-shaft.png"),
                 image_mode: SpriteImageMode::Tiled {
@@ -1334,11 +1358,11 @@ fn place_arrow(
                     layout: (*layout).clone(),
                     index: 0,
                 }),
-                custom_size: Some(Vec2::new(300., 10.)),
+                custom_size: Some(Vec2::new(distance, 10.)),
                 anchor: Anchor::CenterLeft,
                 ..default()
             },
-            Transform::from_translation(ev.to_loc.with_z(10.)),
+            transform,
             AnimatedArrow {
                 index: 0,
                 frame_timer: Timer::new(Duration::from_secs_f32(0.05), TimerMode::Repeating),

@@ -301,7 +301,7 @@ fn fit_inside_matrix(
             .iter()
             .filter_map(|e| q_children.get(*e).ok())
             .collect::<Vec<_>>();
-        children.sort_by_key(|(_, row)| row.row_nr);
+        children.sort_by_key(|(_, row)| row.row);
         children
     };
     let fit = within.rect;

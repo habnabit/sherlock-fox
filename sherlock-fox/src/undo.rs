@@ -116,10 +116,10 @@ fn adjust_undo_state(
         };
         tree_loc.current = new_node;
         puzzle.clone_from(new_state);
-        for row_nr in 0..puzzle.rows.len() {
-            for cell_nr in 0..puzzle.max_column as isize {
+        for row in puzzle.iter_rows() {
+            for col in puzzle.iter_cols() {
                 update_display_tx.send(UpdateCellDisplay {
-                    loc: CellLoc { row_nr, cell_nr },
+                    loc: CellLoc { row, col },
                 });
             }
         }

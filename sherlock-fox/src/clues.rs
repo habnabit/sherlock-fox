@@ -3,11 +3,14 @@
 // SPDX-License-Identifier: EUPL-1.2
 
 use bevy::{prelude::*, utils::HashMap};
-use rand::Rng;
+use rand::{seq::SliceRandom, Rng};
 use typemap::ShareCloneMap;
 
 use crate::{
-    puzzle::{CellLoc, CellLocIndex, Puzzle},
+    puzzle::{
+        CellLoc, CellLocAnswer, CellLocIndex, LAns, LCol, LColspan, LRow, Puzzle, RowAnswer,
+        RowIndexed,
+    },
     UpdateCellIndex, NO_PICK,
 };
 
@@ -156,7 +159,7 @@ pub trait PuzzleClue: std::fmt::Debug {
         &self,
         parent: &mut ChildBuilder,
         puzzle: &Puzzle,
-        cells: &mut HashMap<CellLoc, Entity>,
+        cells: &mut HashMap<RowAnswer, Entity>,
     );
 }
 
@@ -198,19 +201,17 @@ pub struct PuzzleClues {
 #[derive(Debug, Component, Clone, Reflect)]
 pub struct SameColumnClue {
     loc: CellLoc,
-    row2: usize,
-    row3: Option<usize>,
+    row2: LRow,
+    row3: Option<LRow>,
 }
 
 impl SameColumnClue {
     pub fn new_random<R: Rng>(rng: &mut R, puzzle: &Puzzle) -> Option<Self> {
-        let n_rows = puzzle.rows.len();
-        let mut rows = rand::seq::index::sample(rng, n_rows, n_rows).into_iter();
+        let mut rows = puzzle.shuffled_rows(rng).into_iter();
         let first_row = rows.next()?;
-        let cell_nr = rng.random_range(0..puzzle.max_column) as isize;
         let loc = CellLoc {
-            row_nr: first_row,
-            cell_nr,
+            row: first_row,
+            col: puzzle.random_column(rng),
         };
         let row2 = rows.next()?;
         let row3 = if rng.random_ratio(1, 3) {
@@ -223,7 +224,7 @@ impl SameColumnClue {
 
     fn loc2(&self) -> CellLoc {
         CellLoc {
-            row_nr: self.row2,
+            row: self.row2,
             ..self.loc
         }
     }
@@ -231,7 +232,7 @@ impl SameColumnClue {
     fn loc3(&self) -> Option<CellLoc> {
         try {
             CellLoc {
-                row_nr: self.row3?,
+                row: self.row3?,
                 ..self.loc
             }
         }
@@ -292,8 +293,8 @@ impl std::ops::Deref for SelectionProxy {
 impl CellDisplay for SelectionProxy {
     fn as_cell_display_string(&self) -> String {
         format!(
-            "Cell[r{} c{} i{}]",
-            self.loc.row_nr, self.loc.cell_nr, self.index
+            "Cell[{:?} {:?} {:?}]",
+            self.loc.row, self.loc.col, self.index
         )
     }
 
@@ -337,7 +338,7 @@ struct Loc2Mirrored {
 
 impl Loc2Mirrored {
     pub fn colspan(&self) -> usize {
-        self.loc1.loc.colspan(&self.loc2.loc)
+        self.loc1.loc.columns_between(&self.loc2.loc)
     }
 }
 
@@ -386,13 +387,6 @@ impl Loc3Mirrored {
 
 type IfThen<L, R> = fn(&L) -> Option<R>;
 
-#[derive(Debug, Clone, Copy)]
-struct ImplicationWidth {
-    min: isize,
-    max: isize,
-    cellspan: usize,
-}
-
 impl<'p> ImplicationResolver<'p, ()> {
     fn new_unit(puzzle: &'p Puzzle) -> Self {
         ImplicationResolver {
@@ -404,30 +398,19 @@ impl<'p> ImplicationResolver<'p, ()> {
 }
 
 impl<'p, IT> ImplicationResolver<'p, IT> {
-    fn add_loc(&mut self, loc: CellLoc) {
-        let index = self.puzzle.cell_answer_index(loc);
-        self.cells.push(CellLocIndex { loc, index });
+    fn add_answer(&mut self, loc: CellLoc) {
+        self.cells.push(self.puzzle.answer_at(loc).decay_to_ind());
     }
 
-    fn width(&self) -> ImplicationWidth {
-        use itertools::{Itertools, MinMaxResult::*};
-        let (min, max) = match self.cells.iter().map(|i| i.loc.cell_nr).minmax() {
-            OneElement(c) => (c, c),
-            MinMax(a, b) => (a, b),
-            NoElements => unreachable!(),
-        };
-        ImplicationWidth {
-            min,
-            max,
-            cellspan: max.abs_diff(min),
-        }
+    fn colspan(&self) -> LColspan {
+        use itertools::Itertools;
+        self.cells.iter().map(|i| i.loc.col).minmax().into()
     }
 
     fn iter_all_cols<IT2>(&self) -> impl Iterator<Item = ImplicationResolver<IT2>> {
-        let width = self.width();
-        (-(width.cellspan as isize)..self.puzzle.max_column as isize).map(move |shift| {
-            let shift = shift - width.min;
-            let cells = self.cells.iter().map(|&c| c.shift_loc(shift)).collect();
+        let colspan = self.colspan();
+        self.puzzle.iter_col_shift(colspan).map(move |shift| {
+            let cells = self.cells.iter().map(|&c| c.shift_column(shift)).collect();
             ImplicationResolver {
                 cells,
                 actions: Vec::default(),
@@ -586,10 +569,10 @@ static SAME_COLUMN_CLEAR: &[ClueExplanationChunk] = explanation![
 impl PuzzleClue for SameColumnClue {
     fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance {
         let mut resolver = ImplicationResolver::new_unit(puzzle);
-        resolver.add_loc(self.loc);
-        resolver.add_loc(self.loc2());
+        resolver.add_answer(self.loc);
+        resolver.add_answer(self.loc2());
         if let Some(loc3) = self.loc3() {
-            resolver.add_loc(loc3);
+            resolver.add_answer(loc3);
         }
         for mut sub_resolver in resolver.iter_all_cols::<IfThen<_, _>>() {
             sub_resolver
@@ -624,7 +607,7 @@ impl PuzzleClue for SameColumnClue {
         &self,
         parent: &mut ChildBuilder,
         puzzle: &Puzzle,
-        cells: &mut HashMap<CellLoc, Entity>,
+        cells: &mut HashMap<RowAnswer, Entity>,
     ) {
         let sprite_size = Vec2::new(32., 32.);
         let size_sprite = |mut sprite: Sprite| {
@@ -643,7 +626,7 @@ impl PuzzleClue for SameColumnClue {
                 NO_PICK,
             ))
             .id();
-        cells.insert(self.loc, id1);
+        cells.insert(puzzle.answer_at(self.loc).decay_column(), id1);
         let loc2 = self.loc2();
         let (sprite2, color2) = puzzle.cell_answer_display(loc2);
         let id2 = parent
@@ -657,7 +640,7 @@ impl PuzzleClue for SameColumnClue {
                 NO_PICK,
             ))
             .id();
-        cells.insert(loc2, id2);
+        cells.insert(puzzle.answer_at(loc2).decay_column(), id2);
         if let Some(loc3) = self.loc3() {
             let (sprite3, color3) = puzzle.cell_answer_display(loc3);
             let id3 = parent
@@ -671,7 +654,7 @@ impl PuzzleClue for SameColumnClue {
                     NO_PICK,
                 ))
                 .id();
-            cells.insert(loc3, id3);
+            cells.insert(puzzle.answer_at(loc3).decay_column(), id3);
         }
     }
 }
@@ -684,22 +667,21 @@ pub struct AdjacentColumnClue {
 
 impl AdjacentColumnClue {
     pub fn new_random<R: Rng>(rng: &mut R, puzzle: &Puzzle) -> Option<Self> {
-        let n_rows = puzzle.rows.len();
-        let [col1, col2] = rand::seq::index::sample_array(rng, puzzle.max_column)?;
+        let cols = puzzle.shuffled_cols(rng);
         Some(AdjacentColumnClue {
             loc1: CellLoc {
-                row_nr: rng.random_range(0..n_rows),
-                cell_nr: col1 as isize,
+                row: puzzle.random_row(rng),
+                col: cols[0],
             },
             loc2: CellLoc {
-                row_nr: rng.random_range(0..n_rows),
-                cell_nr: col2 as isize,
+                row: puzzle.random_row(rng),
+                col: cols[1],
             },
         })
     }
 
     pub fn colspan(&self) -> usize {
-        self.loc1.colspan(&self.loc2)
+        self.loc1.columns_between(&self.loc2)
     }
 }
 
@@ -720,8 +702,8 @@ static ADJACENT_COLUMN_CLEAR: &[ClueExplanationChunk] = explanation![
 impl PuzzleClue for AdjacentColumnClue {
     fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance {
         let mut resolver = ImplicationResolver::new_unit(puzzle);
-        resolver.add_loc(self.loc1);
-        resolver.add_loc(self.loc2);
+        resolver.add_answer(self.loc1);
+        resolver.add_answer(self.loc2);
         // info!("adjacent resolver: {resolver:#?}");
         for mut sub_resolver in resolver.iter_all_cols::<IfThen<_, _>>() {
             // info!("adjacent sub resolver: {sub_resolver:#?}");
@@ -768,7 +750,7 @@ impl PuzzleClue for AdjacentColumnClue {
         &self,
         parent: &mut ChildBuilder,
         puzzle: &Puzzle,
-        cells: &mut HashMap<CellLoc, Entity>,
+        cells: &mut HashMap<RowAnswer, Entity>,
     ) {
         let sprite_size = Vec2::new(32., 32.);
         let size_sprite = |mut sprite: Sprite| {
@@ -788,7 +770,7 @@ impl PuzzleClue for AdjacentColumnClue {
                 NO_PICK,
             ))
             .id();
-        cells.insert(self.loc1, id1);
+        cells.insert(puzzle.answer_at(self.loc1).decay_column(), id1);
         let (sprite2, color2) = puzzle.cell_answer_display(self.loc2);
         let id2 = parent
             .spawn((
@@ -801,127 +783,127 @@ impl PuzzleClue for AdjacentColumnClue {
                 NO_PICK,
             ))
             .id();
-        cells.insert(self.loc2, id2);
+        cells.insert(puzzle.answer_at(self.loc2).decay_column(), id2);
     }
 }
 
-#[derive(Debug, Component, Clone, Reflect)]
-pub struct BetweenColumnsClue {
-    loc1: CellLoc,
-    loc2: CellLoc,
-    loc3: CellLoc,
-    flip_on_display: bool,
-}
+// #[derive(Debug, Component, Clone, Reflect)]
+// pub struct BetweenColumnsClue {
+//     loc1: CellLoc,
+//     loc2: CellLoc,
+//     loc3: CellLoc,
+//     flip_on_display: bool,
+// }
 
-impl BetweenColumnsClue {
-    pub fn new_random<R: Rng>(rng: &mut R, puzzle: &Puzzle) -> Option<Self> {
-        let n_rows = puzzle.rows.len();
-        let mut columns: [usize; 3] = rand::seq::index::sample_array(rng, puzzle.max_column)?;
-        columns.sort();
-        let [col1, col2, col3] = columns;
-        Some(BetweenColumnsClue {
-            loc1: CellLoc {
-                row_nr: rng.random_range(0..n_rows),
-                cell_nr: col1 as isize,
-            },
-            loc2: CellLoc {
-                row_nr: rng.random_range(0..n_rows),
-                cell_nr: col2 as isize,
-            },
-            loc3: CellLoc {
-                row_nr: rng.random_range(0..n_rows),
-                cell_nr: col3 as isize,
-            },
-            flip_on_display: rng.random(),
-        })
-    }
-}
+// impl BetweenColumnsClue {
+//     pub fn new_random<R: Rng>(rng: &mut R, puzzle: &Puzzle) -> Option<Self> {
+//         let n_rows = puzzle.rows.len();
+//         let mut columns: [usize; 3] = rand::seq::index::sample_array(rng, puzzle.max_column)?;
+//         columns.sort();
+//         let [col1, col2, col3] = columns;
+//         Some(BetweenColumnsClue {
+//             loc1: CellLoc {
+//                 row_nr: rng.random_range(0..n_rows),
+//                 cell_nr: col1 as isize,
+//             },
+//             loc2: CellLoc {
+//                 row_nr: rng.random_range(0..n_rows),
+//                 cell_nr: col2 as isize,
+//             },
+//             loc3: CellLoc {
+//                 row_nr: rng.random_range(0..n_rows),
+//                 cell_nr: col3 as isize,
+//             },
+//             flip_on_display: rng.random(),
+//         })
+//     }
+// }
 
-static BETWEEN_COLUMN_CLEAR: &[ClueExplanationChunk] = explanation![
-    Loc3:
-    %{loc1}, "must be impossible because it requires", %{loc2}, "and", %{loc3},
-];
+// static BETWEEN_COLUMN_CLEAR: &[ClueExplanationChunk] = explanation![
+//     Loc3:
+//     %{loc1}, "must be impossible because it requires", %{loc2}, "and", %{loc3},
+// ];
 
-impl PuzzleClue for BetweenColumnsClue {
-    fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance {
-        let mut resolver = ImplicationResolver::new_unit(puzzle);
-        resolver.add_loc(self.loc1);
-        resolver.add_loc(self.loc2);
-        resolver.add_loc(self.loc3);
-        // info!("between resolver: {resolver:?}");
-        for mut sub_resolver in resolver.iter_all_cols::<IfThen<_, _>>() {
-            // info!("between sub resolver: {sub_resolver:?}");
-            sub_resolver.if_then(|l: &Loc3Mirrored| {
-                if !l.loc1.is_enabled_not_solo() {
-                    return None;
-                }
-                l.eval_as_3s(|sl| {
-                    if !sl.loc2.is_enabled || !sl.loc3.is_enabled {
-                        Some(
-                            sl.loc1
-                                .as_clear()
-                                .with_explanation((sl, BETWEEN_COLUMN_CLEAR)),
-                        )
-                    } else {
-                        None
-                    }
-                })
-            });
-            for ev in sub_resolver.iter_reflected_3s() {
-                return Some(ev);
-            }
-        }
-        None
-    }
+// impl PuzzleClue for BetweenColumnsClue {
+//     fn advance_puzzle(&self, puzzle: &Puzzle) -> PuzzleAdvance {
+//         let mut resolver = ImplicationResolver::new_unit(puzzle);
+//         resolver.add_answer(self.loc1);
+//         resolver.add_answer(self.loc2);
+//         resolver.add_answer(self.loc3);
+//         // info!("between resolver: {resolver:?}");
+//         for mut sub_resolver in resolver.iter_all_cols::<IfThen<_, _>>() {
+//             // info!("between sub resolver: {sub_resolver:?}");
+//             sub_resolver.if_then(|l: &Loc3Mirrored| {
+//                 if !l.loc1.is_enabled_not_solo() {
+//                     return None;
+//                 }
+//                 l.eval_as_3s(|sl| {
+//                     if !sl.loc2.is_enabled || !sl.loc3.is_enabled {
+//                         Some(
+//                             sl.loc1
+//                                 .as_clear()
+//                                 .with_explanation((sl, BETWEEN_COLUMN_CLEAR)),
+//                         )
+//                     } else {
+//                         None
+//                     }
+//                 })
+//             });
+//             for ev in sub_resolver.iter_reflected_3s() {
+//                 return Some(ev);
+//             }
+//         }
+//         None
+//     }
 
-    fn spawn_into(
-        &self,
-        parent: &mut ChildBuilder,
-        puzzle: &Puzzle,
-        cells: &mut HashMap<CellLoc, Entity>,
-    ) {
-        let sprite_size = Vec2::new(32., 32.);
-        let size_sprite = |mut sprite: Sprite| {
-            sprite.custom_size = Some(sprite_size);
-            sprite
-        };
-        let (loc1, loc3) = if self.flip_on_display {
-            (self.loc3, self.loc1)
-        } else {
-            (self.loc1, self.loc3)
-        };
-        let (sprite1, color1) = puzzle.cell_answer_display(loc1);
-        parent
-            .spawn((
-                Sprite::from_color(color1, sprite_size),
-                Transform::from_xyz(-32., 0., 0.),
-            ))
-            .with_child((
-                size_sprite(sprite1),
-                Transform::from_xyz(0., 0., 1.),
-                NO_PICK,
-            ));
-        let (sprite2, color2) = puzzle.cell_answer_display(self.loc2);
-        parent
-            .spawn((
-                Sprite::from_color(color2, sprite_size),
-                Transform::from_xyz(0., 0., -1.),
-            ))
-            .with_child((
-                size_sprite(sprite2),
-                Transform::from_xyz(0., 0., 1.),
-                NO_PICK,
-            ));
-        let (sprite3, color3) = puzzle.cell_answer_display(loc3);
-        parent
-            .spawn((
-                Sprite::from_color(color3, sprite_size),
-                Transform::from_xyz(32., 0., 0.),
-            ))
-            .with_child((
-                size_sprite(sprite3),
-                Transform::from_xyz(0., 0., 1.),
-                NO_PICK,
-            ));
-    }
-}
+//     fn spawn_into(
+//         &self,
+//         parent: &mut ChildBuilder,
+//         puzzle: &Puzzle,
+//         cells: &mut HashMap<CellLoc, Entity>,
+//     ) {
+//         let sprite_size = Vec2::new(32., 32.);
+//         let size_sprite = |mut sprite: Sprite| {
+//             sprite.custom_size = Some(sprite_size);
+//             sprite
+//         };
+//         let (loc1, loc3) = if self.flip_on_display {
+//             (self.loc3, self.loc1)
+//         } else {
+//             (self.loc1, self.loc3)
+//         };
+//         let (sprite1, color1) = puzzle.cell_answer_display(loc1);
+//         parent
+//             .spawn((
+//                 Sprite::from_color(color1, sprite_size),
+//                 Transform::from_xyz(-32., 0., 0.),
+//             ))
+//             .with_child((
+//                 size_sprite(sprite1),
+//                 Transform::from_xyz(0., 0., 1.),
+//                 NO_PICK,
+//             ));
+//         let (sprite2, color2) = puzzle.cell_answer_display(self.loc2);
+//         parent
+//             .spawn((
+//                 Sprite::from_color(color2, sprite_size),
+//                 Transform::from_xyz(0., 0., -1.),
+//             ))
+//             .with_child((
+//                 size_sprite(sprite2),
+//                 Transform::from_xyz(0., 0., 1.),
+//                 NO_PICK,
+//             ));
+//         let (sprite3, color3) = puzzle.cell_answer_display(loc3);
+//         parent
+//             .spawn((
+//                 Sprite::from_color(color3, sprite_size),
+//                 Transform::from_xyz(32., 0., 0.),
+//             ))
+//             .with_child((
+//                 size_sprite(sprite3),
+//                 Transform::from_xyz(0., 0., 1.),
+//                 NO_PICK,
+//             ));
+//     }
+// }
